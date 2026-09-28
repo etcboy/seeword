@@ -1251,28 +1251,57 @@ reality_adduser() {
   show_link "Reality($remark)" "$link"
 }
 
-# Reality 删除用户（至少保留一个）
+# Reality 用户列表（内部：只打印，调用方已做检查）
+_list_reality_users() {
+  local count i uuid remark
+  count=$(jq '.reality.users | length' "$STATE")
+  say "Reality 用户（共 $count 个）："
+  i=0
+  while IFS=$'\t' read -r uuid remark; do
+    i=$((i+1)); say "  $i. ${remark:-默认}（${uuid:0:8}…）"
+  done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
+}
+# Reality 查看用户
+reality_users() {
+  require_root
+  [[ -f $STATE ]] || err '尚未安装。'
+  load_state
+  has_reality || err 'Reality 尚未安装。'
+  _list_reality_users
+}
+# 按编号（1-based）或备注解析用户，输出 0-based 索引；编号优先于备注
+resolve_user_index() {
+  local arg=$1 count i r
+  count=$(jq '.reality.users | length' "$STATE")
+  if [[ $arg =~ ^[0-9]+$ ]] && (( arg >= 1 && arg <= count )); then
+    printf '%s' "$((arg-1))"; return 0
+  fi
+  i=0
+  while IFS= read -r r; do
+    if [[ $r == "$arg" ]]; then printf '%s' "$i"; return 0; fi
+    i=$((i+1))
+  done < <(jq -r '.reality.users[] | (.remark // "")' "$STATE")
+  return 1
+}
+# Reality 删除用户（至少保留一个），$1 可为编号或备注
 reality_deluser() {
   require_root; detect_env
   [[ -f $STATE ]] || err '尚未安装。'
   load_state
   has_reality || err 'Reality 尚未安装。'
-  local count i uuid remark choice=${1:-}
+  local count choice=${1:-} idx remark
   count=$(jq '.reality.users | length' "$STATE")
   (( count > 1 )) || err '只剩一个用户，不能再删。'
   if [[ -z $choice ]]; then
-    say '当前 Reality 用户：'
-    i=0
-    while IFS=$'\t' read -r uuid remark; do
-      i=$((i+1)); say "  $i. ${remark:-默认}（${uuid:0:8}…）"
-    done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
-    read -r -p '输入要删除的用户编号：' choice
+    _list_reality_users
+    read -r -p '输入要删除的用户编号或备注：' choice
   fi
-  [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )) || err '编号无效。'
+  idx=$(resolve_user_index "$choice") || err '未找到该用户（编号或备注无效）。'
+  remark=$(jq -r --argjson idx "$idx" '.reality.users[$idx].remark // "默认"' "$STATE")
   init_tmp
-  jq --argjson idx "$((choice-1))" 'del(.reality.users[$idx])' "$STATE" > "$TMP_DIR/state-new"
+  jq --argjson idx "$idx" 'del(.reality.users[$idx])' "$STATE" > "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
-  say '已删除。'
+  say "已删除用户：$remark"
 }
 
 # 一键开启 BBR
@@ -1434,13 +1463,14 @@ tools_menu() {
 2. 一键开启 BBR
 3. Reality 添加用户
 4. Reality 删除用户
-5. 查看流量统计
-6. 一键体检
-7. 备份配置
-8. 恢复配置
-9. 重载服务
-10. 安装全部依赖
-11. 修复系统环境（软件源/DNS/网络）
+5. 查看 Reality 用户
+6. 查看流量统计
+7. 一键体检
+8. 备份配置
+9. 恢复配置
+10. 重载服务
+11. 安装全部依赖
+12. 修复系统环境（软件源/DNS/网络）
 0. 返回上级
 EOF
     read -r -p '请选择：' choice
@@ -1449,15 +1479,16 @@ EOF
       2) guarded enable_bbr ;;
       3) guarded reality_adduser ;;
       4) guarded reality_deluser ;;
-      5) traffic ;;
-      6) doctor ;;
-      7) guarded backup ;;
-      8) read -r -p '请输入备份文件路径：' src
+      5) reality_users ;;
+      6) traffic ;;
+      7) doctor ;;
+      8) guarded backup ;;
+      9) read -r -p '请输入备份文件路径：' src
          [[ -n $src ]] || { say '已取消。'; continue; }
          guarded restore "$src" ;;
-      9) guarded reload_services ;;
-      10) guarded cmd_deps ;;
-      11) guarded fixenv ;;
+      10) guarded reload_services ;;
+      11) guarded cmd_deps ;;
+      12) guarded fixenv ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1503,8 +1534,8 @@ main() {
   local cmd=${1:-menu}
   case $cmd in
     menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
-doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
-    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv]'; exit 2 ;;
+doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv) ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv]'; exit 2 ;;
   esac
   require_root; detect_env
   case $cmd in
@@ -1532,6 +1563,7 @@ doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
     traffic) traffic ;;
     adduser) reality_adduser "${2:-}" ;;
     deluser) reality_deluser "${2:-}" ;;
+    users) reality_users ;;
     bbr) enable_bbr ;;
     deps) cmd_deps ;;
     fixenv) fixenv ;;

@@ -34,7 +34,7 @@ wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo
 ## 功能一览
 
 - 多协议共存：Reality、HY2、SS2022 可按需组合安装。
-- Reality 支持多用户：`adduser` / `deluser` 增删用户。
+- Reality 支持多用户：`adduser` / `deluser` / `users` 增删查用户。
 - 443 端口智能处理：Reality 占用 TCP 443 时，本机 Nginx 的 443 站点自动让位；未通过 Reality 认证的 HTTPS 请求回落到 Nginx，展示默认页面（已安装 OpenList 则反代到 OpenList）。
 - OpenList 独立安装：不再随 Reality/HY2 自动安装；如需用它做 SNI 伪装站，在主菜单单独安装，可随时独立卸载。
 - 证书按完整域名独立存放，每个域名独立记录验证方式（HTTP/DNS），acme.sh 自动续期。
@@ -50,7 +50,7 @@ wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
 | 4. 安装 OpenList    | SNI 伪装站，可选；安装后 Nginx 自动反代到 OpenList，否则展示 Nginx 默认页面。 |
 | 5. 查看配置与状态   | 分享链接、二维码、OpenList 登录信息、服务状态。                       |
-| 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理、流量统计、一键体检、备份/恢复、重载服务。 |
+| 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理（添加/删除/查看）、流量统计、一键体检、备份/恢复、重载服务。 |
 | 7. 卸载管理         | 二级菜单：彻底全卸载，或单独卸载 Reality / HY2 / SS2022 / OpenList。   |
 
 ### 常用子命令
@@ -66,8 +66,9 @@ sudo seeword status               # 查看服务状态
 sudo seeword update               # 更新 Xray 内核与地理数据（已是最新则跳过）
 sudo seeword doctor               # 一键体检
 sudo seeword traffic              # 流量统计（Xray 启动后累计，重启后清零）
-sudo seeword adduser [备注]        # Reality 添加用户；直接给备注则一步完成并显示链接和二维码
-sudo seeword deluser [编号]        # Reality 删除用户；直接给编号则一步完成
+sudo seeword adduser [备注]             # Reality 添加用户；直接给备注则一步完成并显示链接和二维码
+sudo seeword deluser [编号或备注]    # Reality 删除用户；直接给编号或备注则一步完成
+sudo seeword users                      # 查看 Reality 用户列表
 sudo seeword backup [输出路径]     # 备份配置
 sudo seeword restore <备份文件>    # 恢复配置
 sudo seeword bbr                  # 一键开启 BBR
