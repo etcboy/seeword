@@ -43,7 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sud
 | OpenList | `/opt/openlist/` |
 | Xray 地理数据 | `/usr/local/share/xray/` |
 
-例如 `a.bd.de` 的证书放在 `/etc/nginx/zs/a/`。若另一个域名的首段也为 `a`，脚本会拒绝覆盖已有证书。
+例如 `a.bc.de` 的证书放在 `/etc/nginx/zs/a/`。若另一个域名的首段也为 `a`，脚本会拒绝覆盖已有证书。
 
 ## 说明
 
