@@ -56,6 +56,11 @@ open_firewall_port() {
     iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
       iptables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
   fi
+  # IPv6 同样放行（ufw/firewalld 已自动处理双栈，这里补裸 iptables 的情况）
+  if command -v ip6tables >/dev/null 2>&1; then
+    ip6tables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
+      ip6tables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
+  fi
 }
 
 say() { printf '%s\n' "$*"; }
@@ -420,6 +425,90 @@ commit_state() {
 valid_domain() {
   [[ $1 =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] && ((${#1} <= 253))
 }
+# 解析域名全部 IP（每行一个），尽力而为
+resolve_ips() {
+  local d=$1
+  if command -v getent >/dev/null 2>&1; then
+    getent ahosts "$d" 2>/dev/null | awk '{print $1}' | sort -u
+  elif command -v dig >/dev/null 2>&1; then
+    { dig +short A "$d" 2>/dev/null; dig +short AAAA "$d" 2>/dev/null; } | sort -u
+  elif command -v host >/dev/null 2>&1; then
+    host "$d" 2>/dev/null | awk '/has (IPv6 )?address/{print $NF}' | sort -u
+  elif command -v nslookup >/dev/null 2>&1; then
+    nslookup "$d" 2>/dev/null | awk '/^Address: / && $2 !~ /#/{print $2}' | sort -u
+  fi
+}
+is_private_v4() {
+  local ip=$1 a b rest
+  [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  IFS=. read -r a b rest <<< "$ip"
+  (( 10#$a == 10 )) && return 0
+  (( 10#$a == 172 && 10#$b >= 16 && 10#$b <= 31 )) && return 0
+  (( 10#$a == 192 && 10#$b == 168 )) && return 0
+  (( 10#$a == 100 && 10#$b >= 64 && 10#$b <= 127 )) && return 0
+  return 1
+}
+# 输入域名/SNI 后检查 DNS：分辨 A/AAAA，核对是否指向本机（NAT 纯 v6 环境重点看 AAAA）
+check_domain_dns() {
+  local domain=$1 ip pub4 pub6 local_v4 v6_hit=0 v4_hit=0 v4_nat=0 lip
+  local -a a_list=() aaaa_list=() local_v6=()
+  say "正在检查域名 $domain 的 DNS 解析…"
+  while IFS= read -r ip; do
+    [[ -n $ip ]] || continue
+    if [[ $ip == *:* ]]; then aaaa_list+=("$ip"); else a_list+=("$ip"); fi
+  done < <(resolve_ips "$domain")
+  if (( ${#a_list[@]} == 0 && ${#aaaa_list[@]} == 0 )); then
+    if ! command -v getent >/dev/null 2>&1 && ! command -v dig >/dev/null 2>&1 \
+      && ! command -v host >/dev/null 2>&1 && ! command -v nslookup >/dev/null 2>&1; then
+      say '本机缺少 DNS 查询工具，跳过 DNS 检查（请手动确认域名已解析到本机）。'
+      return 0
+    fi
+    err "域名 $domain 未能解析到任何 IP，请先做好 DNS 解析再安装。"
+  fi
+  # 本机地址：公网出口 IP + 本地全局地址
+  pub4=$(curl -4 -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || true)
+  pub6=$(curl -6 -fsSL --max-time 5 https://api64.ipify.org 2>/dev/null || true)
+  if command -v ip >/dev/null 2>&1; then
+    while IFS= read -r lip; do
+      [[ -n $lip && $lip != fe80:* ]] || continue
+      local_v6+=("$lip")
+    done < <(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1)
+    local_v4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)
+  fi
+  if [[ -n ${local_v4:-} ]] && is_private_v4 "$local_v4"; then v4_nat=1; fi
+  say "DNS 解析结果："
+  if (( ${#aaaa_list[@]} > 0 )); then say "  AAAA（IPv6）：${aaaa_list[*]}"; else say '  AAAA（IPv6）：无'; fi
+  if (( ${#a_list[@]} > 0 )); then say "  A（IPv4）：${a_list[*]}"; else say '  A（IPv4）：无'; fi
+  say '本机地址：'
+  if (( ${#local_v6[@]} > 0 )); then say "  IPv6：${local_v6[*]}"; else say '  IPv6：无'; fi
+  if [[ -n ${local_v4:-} ]]; then
+    if (( v4_nat )); then say "  IPv4：$local_v4（NAT 内网地址，入站不可达）"
+    else say "  IPv4：$local_v4"; fi
+  else say '  IPv4：无'; fi
+  # 核对域名是否指向本机
+  if (( ${#aaaa_list[@]} > 0 )); then
+    for ip in "${aaaa_list[@]}"; do
+      if [[ $ip == "$pub6" ]]; then v6_hit=1; break; fi
+      if (( ${#local_v6[@]} > 0 )) && printf '%s\n' "${local_v6[@]}" | grep -qx "$ip"; then v6_hit=1; break; fi
+    done
+  fi
+  if (( ${#a_list[@]} > 0 && v4_nat == 0 )); then
+    for ip in "${a_list[@]}"; do
+      if [[ $ip == "$pub4" || $ip == "${local_v4:-}" ]]; then v4_hit=1; break; fi
+    done
+  fi
+  if (( v6_hit )); then
+    say '结论：域名经 IPv6（AAAA）正确指向本机，证书 HTTP 验证将走 IPv6。'
+  elif (( v4_hit )); then
+    say '结论：域名经 IPv4（A）正确指向本机，证书 HTTP 验证将走 IPv4。'
+  else
+    say '警告：域名解析到的 IP 与本机地址不一致，HTTP 证书验证很可能失败。'
+    if (( v4_nat )) && (( ${#aaaa_list[@]} == 0 )); then
+      say '提示：本机 IPv4 为 NAT 内网地址（入站不可达），请为域名添加 AAAA 记录指向本机 IPv6。'
+    fi
+    confirm_go '仍要继续安装' || return 1
+  fi
+}
 ask_domain() {
   local proto=$1 other_domain input prompt label
   if [[ $proto == reality ]]; then label='Reality'; else label='HY2'; fi
@@ -435,6 +524,7 @@ ask_domain() {
   input=${input,,}
   valid_domain "$input" || err '域名格式不正确。'
   DOMAIN=$input
+  check_domain_dns "$DOMAIN" || return 1
 }
 
 ask_port() {
@@ -565,7 +655,7 @@ issue_cert() {
     say 'TCP 80 可用，使用 HTTP 验证申请证书。'
     ensure_http_challenge "$domain"
     if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
-      err 'HTTP 80 证书申请失败，请确认 DNS 指向本机且 TCP 80 已放行。'
+      err 'HTTP 80 证书申请失败：请确认域名已解析到本机（纯 IPv6 环境需要 AAAA 记录），且 TCP 80 已放行（含 IPv6 防火墙）。'
     fi
   else
     CERT_METHOD=dns
@@ -884,7 +974,7 @@ install_reality() {
   install_common
   has_reality && err 'Reality 已安装。'
   ensure_web_deps
-  ask_domain reality
+  ask_domain reality || return 1
   ask_reality_port
   preflight_web
   say ''
@@ -923,7 +1013,7 @@ install_hy2() {
   install_common
   has_hy2 && err 'HY2 已安装。'
   ensure_web_deps
-  ask_domain hy2
+  ask_domain hy2 || return 1
   ask_port HPORT udp 443 'HY2 UDP 端口'
   preflight_web
   say ''
