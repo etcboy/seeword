@@ -113,6 +113,7 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 - 客户端兼容性取决于客户端版本；HY2 请使用支持 Hysteria2 的客户端。
 - 分享链接中的连接地址直接使用服务器 IP（优先公网 IPv4，无可用 V4 时用 IPv6，自动加方括号），不走域名解析；SNI 仍为你输入的域名。
 - “一键全卸载”会卸载 Nginx 软件包并删除 `/root/.acme.sh`（含其管理的全部证书），执行前请确认服务器上没有其他服务依赖它们。
+- 脚本生成的 Xray 配置中，VLESS/HY2 入站统一使用 `clients` 字段（Xray 26.3.27 要求；`xray -test` 对错误字段名不报错但会静默忽略，导致认证失败）。
 - `fixenv` 会在 apt 源缺失时写入 Debian/Ubuntu 官方源（自动备份原文件）、在 DNS 失效时写入公共 DNS，属于系统级修改，执行前请确认。
 
 ## 上游文档
