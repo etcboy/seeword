@@ -6,7 +6,7 @@
 set -Eeuo pipefail
 umask 077
 
-SRC=${XRAY_MANAGER_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh}
+SRC=${XRAY_MANAGER_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/seeword}
 TARGET=${XRAY_MANAGER_TARGET:-/usr/local/bin/xray-manager}
 
 SUDO=

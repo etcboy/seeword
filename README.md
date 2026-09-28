@@ -1,4 +1,4 @@
-# Seeword · 个人 Xray 管理脚本
+# Seeword · 管理脚本
 
 > 给自用服务器准备的 Bash 菜单脚本：快速部署并统一管理 **VLESS + Reality**、**Hysteria2（HY2）**、**Shadowsocks 2022**，以及 Xray、Nginx、证书与 OpenList。
 
