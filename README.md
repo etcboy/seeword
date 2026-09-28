@@ -64,6 +64,7 @@ sudo seeword openlist             # 单独安装 OpenList（SNI 伪装，可选�
 sudo seeword info                 # 查看配置、分享链接与状态
 sudo seeword status               # 查看服务状态
 sudo seeword update               # 更新 Xray 内核与地理数据（已是最新则跳过）
+sudo seeword update-script        # 更新 Seeword 脚本本身到最新版本（与上面不同）
 sudo seeword doctor               # 一键体检
 sudo seeword traffic              # 流量统计（Xray 启动后累计，重启后清零）
 sudo seeword adduser [备注]             # Reality 添加用户；直接给备注则一步完成并显示链接和二维码
