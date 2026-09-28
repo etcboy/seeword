@@ -491,8 +491,8 @@ preflight_web() {
   # 安装首个 Web 协议（Reality/HY2）前的通用检查
   if ! has_reality && ! has_hy2; then
     check_port_free tcp 8443   # Reality 回落内部端口，保留
-    [[ -x $OPENLIST_DIR/openlist ]] || check_port_free tcp 5244
   fi
+  # OpenList 已改为独立安装，其 5244 端口由独立安装流程检查
 }
 
 install_acme() {
@@ -624,7 +624,8 @@ EOF
   fi
 }
 install_openlist() {
-  local domain=$1 binary pass config jwt
+  local domain=$1 binary pass config jwt site_url
+  site_url=${domain:+https://$domain}
   if [[ -x $OPENLIST_DIR/openlist ]]; then
     [[ -f $ROOT/openlist-owned ]] || err "$OPENLIST_DIR 已存在非本脚本安装的 OpenList。"
     install_openlist_service
@@ -635,6 +636,7 @@ install_openlist() {
       printf '%s\n' "$pass" > "$ROOT/openlist-password"
       chmod 600 "$ROOT/openlist-password"
     fi
+    say "OpenList 管理员：admin  密码：$(cat "$ROOT/openlist-password")"
     return
   fi
   [[ ! -e $OPENLIST_DIR ]] || err "$OPENLIST_DIR 已存在，避免覆盖。"
@@ -651,7 +653,7 @@ install_openlist() {
   touch "$ROOT/openlist-owned"
   config=$OPENLIST_DIR/data/config.json
   jwt=$(openssl rand -hex 32)
-  jq -n --arg url "https://$domain" --arg jwt "$jwt" \
+  jq -n --arg url "$site_url" --arg jwt "$jwt" \
     '{force:true,site_url:$url,jwt_secret:$jwt,database:{type:"sqlite3",db_file:"data/data.db"},scheme:{address:"127.0.0.1",http_port:5244,https_port:-1},temp_dir:"data/temp",bleve_dir:"data/bleve"}' > "$config"
   chmod 600 "$config"
   install_openlist_service
@@ -685,11 +687,85 @@ sync_openlist_siteurl() {
   if svc_active openlist-manager; then svc restart openlist-manager >/dev/null 2>&1 || true; fi
   say "OpenList 访问域名已同步为 https://$wd"
 }
+# 删除 OpenList 程序、数据与服务（Nginx 站点由调用方按需重写）
+purge_openlist() {
+  svc stop openlist-manager >/dev/null 2>&1 || true
+  svc disable openlist-manager >/dev/null 2>&1 || true
+  if [[ $INIT == systemd ]]; then
+    rm -f -- /etc/systemd/system/openlist-manager.service
+    systemctl daemon-reload
+  else
+    rm -f -- /etc/init.d/openlist-manager
+  fi
+  if [[ -f $ROOT/openlist-owned ]]; then rm -rf -- "$OPENLIST_DIR"; fi
+  rm -f -- "$ROOT/openlist-password" "$ROOT/openlist-owned"
+}
+# 单独安装 OpenList（SNI 伪装，可选）
+install_openlist_standalone() {
+  require_root; detect_env
+  ensure_deps
+  init_tmp
+  local domain= has_web=0
+  if [[ -f $STATE ]]; then
+    domain=$(web_domain 2>/dev/null || true)
+    { has_reality || has_hy2; } && has_web=1
+  fi
+  if [[ -z $domain ]]; then
+    read -r -p 'OpenList 访问域名（可留空，稍后在 OpenList 后台设置）：' domain
+  else
+    say "OpenList 将绑定到现有 Web 域名：$domain"
+  fi
+  [[ -x $OPENLIST_DIR/openlist ]] || check_port_free tcp 5244
+  install_openlist "$domain"
+  if (( has_web )); then
+    write_nginx "$STATE" || err 'Nginx 配置更新失败。'
+    sync_openlist_siteurl
+    say 'Nginx 已切换为反代 OpenList。'
+  else
+    say '当前未安装 Reality/HY2，安装 Web 协议后 Nginx 会自动反代 OpenList。'
+  fi
+}
+# 单独卸载 OpenList，站点切回 Nginx 默认页面
+uninstall_openlist() {
+  require_root; detect_env
+  [[ -f $STATE ]] || err '没有本脚本管理的安装。'
+  [[ -x $OPENLIST_DIR/openlist || -f $ROOT/openlist-owned ]] || { say '未安装 OpenList。'; return; }
+  local confirm
+  read -r -p '将卸载 OpenList（含其数据），站点切回 Nginx 默认页面。输入 YES 确认：' confirm
+  [[ $confirm == YES ]] || { say '已取消。'; return; }
+  init_tmp
+  purge_openlist
+  if [[ -f $STATE ]] && { has_reality || has_hy2; }; then
+    write_nginx "$STATE" || err 'Nginx 配置更新失败。'
+  fi
+  say 'OpenList 已卸载。'
+}
 
+# 未安装 OpenList 时 SNI 站点展示的默认页面根目录：优先用系统自带的 nginx 欢迎页
+nginx_default_root() {
+  local d
+  for d in /var/www/html /usr/share/nginx/html; do
+    if [[ -f $d/index.nginx-debian.html || -f $d/index.html ]]; then printf '%s' "$d"; return 0; fi
+  done
+  # 兜底：生成一个极简欢迎页
+  install -d -m 755 "$ACME_WEBROOT"
+  if [[ ! -f $ACME_WEBROOT/index.html ]]; then
+    cat > "$ACME_WEBROOT/index.html" <<'EOF'
+<!DOCTYPE html>
+<html>
+<head><title>Welcome to nginx!</title></head>
+<body><h1>Welcome to nginx!</h1></body>
+</html>
+EOF
+  fi
+  printf '%s' "$ACME_WEBROOT"
+}
 # 追加一个 HTTPS server 块（$1=listen 行，可多行；$2=server_name；$3=证书目录）
+# 已安装 OpenList 则反代到 OpenList，否则展示 Nginx 默认页面
 nginx_server_block() {
-  local listens=$1 name=$2 dir=$3
-  cat >> "$NGINX_CONF" <<EOF
+  local listens=$1 name=$2 dir=$3 rootdir
+  if [[ -x $OPENLIST_DIR/openlist ]]; then
+    cat >> "$NGINX_CONF" <<EOF
 server {
 $listens
     server_name $name;
@@ -707,6 +783,22 @@ $listens
     }
 }
 EOF
+  else
+    rootdir=$(nginx_default_root)
+    cat >> "$NGINX_CONF" <<EOF
+server {
+$listens
+    server_name $name;
+    ssl_certificate $dir/fullchain.pem;
+    ssl_certificate_key $dir/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    location / {
+        root $rootdir;
+        index index.html index.htm index.nginx-debian.html;
+    }
+}
+EOF
+  fi
 }
 
 write_nginx() {
@@ -800,14 +892,13 @@ install_reality() {
   say '  协议：Reality (VLESS + TCP)'
   say "  域名/SNI：$DOMAIN"
   say "  TCP 端口：$RPORT"
+  if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
   confirm_go '确认开始安装' || return 1
-  step 1 5 '申请证书'
+  step 1 4 '申请证书'
   issue_cert "$DOMAIN"
   open_firewall_port tcp 80
   open_firewall_port tcp "$RPORT"
-  step 2 5 '部署 OpenList'
-  install_openlist "$DOMAIN"
-  step 3 5 '生成 Reality 密钥与配置'
+  step 2 4 '生成 Reality 密钥与配置'
   local keypair private public sid uuid
   keypair=$($XRAY_BIN x25519)
   private=$(awk -F': ' '/Private ?[Kk]ey/{print $2}' <<< "$keypair" | head -n 1)
@@ -818,13 +909,13 @@ install_reality() {
   jq --arg d "$DOMAIN" --argjson port "$RPORT" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
     '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,users:[{uuid:$id,remark:"默认"}]}' \
     "$STATE" > "$TMP_DIR/state-new"
-  step 4 5 '写入 Nginx 与 Xray 配置'
+  step 3 4 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
   "$XRAY_BIN" run -test -config "$TMP_DIR/check-config" || err 'Reality 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
   sync_openlist_siteurl
-  step 5 5 '完成'
+  step 4 4 '完成'
   show_info
 }
 
@@ -840,26 +931,25 @@ install_hy2() {
   say '  协议：Hysteria2 (UDP)'
   say "  域名/SNI：$DOMAIN"
   say "  UDP 端口：$HPORT"
+  if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
   confirm_go '确认开始安装' || return 1
-  step 1 5 '申请证书'
+  step 1 4 '申请证书'
   issue_cert "$DOMAIN"
   open_firewall_port tcp 80
   open_firewall_port udp "$HPORT"
-  step 2 5 '部署 OpenList'
-  install_openlist "$DOMAIN"
-  step 3 5 '生成 HY2 配置'
+  step 2 4 '生成 HY2 配置'
   local pass dir
   pass=$(random_hex 18)
   dir=$(cert_dir "$DOMAIN")
   jq --arg d "$DOMAIN" --argjson port "$HPORT" --arg pass "$pass" --arg cert "$dir/fullchain.pem" --arg key "$dir/privkey.pem" \
     '.hy2={password:$pass,cert:$cert,key:$key,domain:$d,port:$port}' "$STATE" > "$TMP_DIR/state-new"
-  step 4 5 '写入 Nginx 与 Xray 配置'
+  step 3 4 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
   "$XRAY_BIN" run -test -config "$TMP_DIR/check-config" || err 'HY2 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
   sync_openlist_siteurl
-  step 5 5 '完成'
+  step 4 4 '完成'
   show_info
 }
 
@@ -1008,8 +1098,10 @@ doctor() {
     else t_fail 'Xray 配置验证失败'; fi
   else t_fail 'Xray 配置文件缺失'; fi
   if svc_active xray-manager; then t_ok 'xray-manager 服务运行中'; else t_fail 'xray-manager 服务未运行'; fi
-  if has_reality || has_hy2; then
+  if [[ -x $OPENLIST_DIR/openlist ]]; then
     if svc_active openlist-manager; then t_ok 'openlist-manager 服务运行中'; else t_fail 'openlist-manager 服务未运行'; fi
+  fi
+  if has_reality || has_hy2; then
     if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
       t_ok 'Nginx 配置验证通过'
     else t_fail 'Nginx 配置验证失败'; fi
@@ -1067,7 +1159,7 @@ backup() {
 restore() {
   require_root; detect_env
   local src=${1:-}
-  [[ -n $src ]] || err '用法：xray-manager restore <备份文件>'
+  [[ -n $src ]] || err '用法：seeword restore <备份文件>'
   [[ -f $src ]] || err "备份文件不存在：$src"
   local confirm
   read -r -p '恢复将覆盖现有配置并重启服务，输入 YES 确认：' confirm
@@ -1209,7 +1301,8 @@ remove_cert() {
   [[ ! -x $ACME ]] || "$ACME" --remove -d "$domain" --ecc >/dev/null 2>&1 || true
   rm -rf -- "$dir"
 }
-# 移除整个 Web 栈：Nginx 站点、OpenList、全部本脚本管理的证书
+# 移除整个 Web 栈：Nginx 站点、全部本脚本管理的证书
+# OpenList 已是独立组件，不再随 Web 栈移除（由 uninstall_openlist / uninstall_all 处理）
 remove_web_stack() {
   local d dom
   if [[ -f $NGINX_CONF ]]; then
@@ -1221,14 +1314,6 @@ remove_web_stack() {
       err 'Nginx 站点移除失败，已恢复站点文件。'
     fi
   fi
-  svc stop openlist-manager >/dev/null 2>&1 || true
-  svc disable openlist-manager >/dev/null 2>&1 || true
-  if [[ $INIT == systemd ]]; then
-    rm -f -- /etc/systemd/system/openlist-manager.service
-    systemctl daemon-reload
-  else
-    rm -f -- /etc/init.d/openlist-manager
-  fi
   if [[ -d $CERT_ROOT ]]; then
     for d in "$CERT_ROOT"/*; do
       [[ -d $d && -f $d/domain.txt ]] || continue
@@ -1236,8 +1321,7 @@ remove_web_stack() {
       remove_cert "$dom"
     done
   fi
-  if [[ -f $ROOT/openlist-owned ]]; then rm -rf -- "$OPENLIST_DIR"; fi
-  rm -f -- "$ROOT/cert-method" "$ROOT/openlist-password" "$ROOT/openlist-owned" "$ACME_TMP_CONF"
+  rm -f -- "$ROOT/cert-method" "$ACME_TMP_CONF"
   rm -rf -- "$ACME_WEBROOT"
 }
 uninstall_protocol() {
@@ -1297,6 +1381,8 @@ uninstall_all() {
     rm -f /etc/init.d/xray-manager /etc/init.d/openlist-manager
   fi
   remove_web_stack
+  # OpenList 是独立组件，全卸载时显式清理
+  purge_openlist
   # 卸载 Nginx 软件包（含其配置文件）
   pkg_remove nginx
   # 删除 acme.sh 程序及其管理的全部证书记录
@@ -1318,6 +1404,7 @@ uninstall_menu() {
 2. 只卸载 Reality
 3. 只卸载 HY2
 4. 只卸载 SS2022
+5. 只卸载 OpenList
 0. 返回上级
 EOF
     read -r -p '请选择：' choice
@@ -1326,6 +1413,7 @@ EOF
       2) guarded uninstall_protocol reality Reality ;;
       3) guarded uninstall_protocol hy2 HY2 ;;
       4) guarded uninstall_protocol ss SS2022 ;;
+      5) guarded uninstall_openlist ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1386,9 +1474,10 @@ menu() {
 1. 一键安装 Reality
 2. 一键安装 HY2
 3. 一键安装 SS2022
-4. 查看配置、分享链接和服务状态
-5. 更多工具
-6. 卸载管理
+4. 安装 OpenList（SNI 伪装，可选）
+5. 查看配置、分享链接和服务状态
+6. 更多工具
+7. 卸载管理
 0. 退出
 EOF
     read -r -p '请选择：' choice
@@ -1396,9 +1485,10 @@ EOF
       1) guarded install_reality ;;
       2) guarded install_hy2 ;;
       3) guarded install_ss ;;
-      4) show_info ;;
-      5) tools_menu ;;
-      6) uninstall_menu ;;
+      4) guarded install_openlist_standalone ;;
+      5) show_info ;;
+      6) tools_menu ;;
+      7) uninstall_menu ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1408,9 +1498,9 @@ EOF
 main() {
   local cmd=${1:-menu}
   case $cmd in
-    menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|\
+    menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
 doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
-    *) say '用法：seeword [menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv]'; exit 2 ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv]'; exit 2 ;;
   esac
   require_root; detect_env
   case $cmd in
@@ -1422,6 +1512,7 @@ doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
     reality) install_reality ;;
     hy2) install_hy2 ;;
     ss) install_ss ;;
+    openlist) install_openlist_standalone ;;
     update) update_core ;;
     info) show_info ;;
     status) show_status ;;
@@ -1429,6 +1520,7 @@ doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
     uninstall-reality) uninstall_protocol reality Reality ;;
     uninstall-hy2) uninstall_protocol hy2 HY2 ;;
     uninstall-ss) uninstall_protocol ss SS2022 ;;
+    uninstall-openlist) uninstall_openlist ;;
     reload) reload_services ;;
     doctor) doctor ;;
     backup) backup "${2:-}" ;;
