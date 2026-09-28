@@ -152,6 +152,85 @@ ensure_deps() {
   command -v ss >/dev/null 2>&1 || err '缺少 ss（iproute2）端口检查工具。'
 }
 ensure_web_deps() { command -v nginx >/dev/null 2>&1 || pkg_install nginx; }
+# 一键安装本脚本所需的全部依赖（含 acme.sh 需要的 cron、Web 协议需要的 Nginx）
+cmd_deps() {
+  require_root; detect_env
+  ensure_deps
+  if ! command -v crontab >/dev/null 2>&1; then
+    case $PKG in apt) pkg_install cron ;; dnf|yum) pkg_install cronie ;; apk) pkg_install dcron ;; esac
+  fi
+  ensure_web_deps
+  say '依赖安装完成。'
+}
+# 极精简系统 apt 源缺失时，写入 Debian/Ubuntu 官方源（先备份原文件）
+fix_apt_sources() {
+  if grep -rqE --include='*.list' '^[[:space:]]*deb([[:space:]]|$)' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+    say '检测到有效的 apt 源。'
+  else
+    say '未检测到有效的 apt 源。'
+    local id codename fw=
+    id=$(grep -E '^ID=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+    codename=$(grep -E '^VERSION_CODENAME=' /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"')
+    [[ -n $codename ]] || err '无法识别系统版本代号，请手动配置 apt 源。'
+    confirm_go "将写入 $id $codename 的官方源" || return 1
+    [[ -f /etc/apt/sources.list ]] && cp -a /etc/apt/sources.list /etc/apt/sources.list.bak
+    case $id in
+      debian)
+        case $codename in bookworm|trixie|forky|duke) fw=' non-free-firmware' ;; esac
+        cat > /etc/apt/sources.list <<EOF
+deb https://deb.debian.org/debian $codename main contrib non-free$fw
+deb https://deb.debian.org/debian $codename-updates main contrib non-free$fw
+deb https://deb.debian.org/debian-security $codename-security main contrib non-free$fw
+EOF
+        ;;
+      ubuntu)
+        cat > /etc/apt/sources.list <<EOF
+deb https://archive.ubuntu.com/ubuntu $codename main restricted universe multiverse
+deb https://archive.ubuntu.com/ubuntu $codename-updates main restricted universe multiverse
+deb https://archive.ubuntu.com/ubuntu $codename-security main restricted universe multiverse
+EOF
+        ;;
+      *) err "暂不支持为 $id 自动生成 apt 源，请手动配置。" ;;
+    esac
+    say '已写入官方源（原文件已备份为 /etc/apt/sources.list.bak）。'
+  fi
+  DEBIAN_FRONTEND=noninteractive apt-get update || err 'apt update 失败，请检查网络。'
+}
+# 修复极精简系统的软件源/DNS/网络环境，使依赖能够安装
+fixenv() {
+  require_root; detect_env
+  say '== 检查外网连通性 =='
+  if timeout 8 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null; then
+    say '外网连通正常。'
+  else
+    err '无法连接外网（1.1.1.1:443），请先检查服务器网络后再试。'
+  fi
+  say '== 检查 DNS 解析 =='
+  if timeout 8 bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
+    say 'DNS 解析正常。'
+  elif [[ -L /etc/resolv.conf ]]; then
+    err 'DNS 解析失败，且 /etc/resolv.conf 由其他程序管理，请手动检查 DNS 配置。'
+  else
+    say 'DNS 解析失败，尝试写入公共 DNS（1.1.1.1 / 8.8.8.8）。'
+    [[ -f /etc/resolv.conf ]] && cp -a /etc/resolv.conf /etc/resolv.conf.bak
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    timeout 8 bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
+    say 'DNS 已修复（原文件已备份为 /etc/resolv.conf.bak）。'
+  fi
+  say '== 检查软件源 =='
+  case $PKG in
+    apt) fix_apt_sources ;;
+    dnf|yum) "$PKG" makecache -y >/dev/null 2>&1 || err '软件源缓存刷新失败。' ;;
+    apk) apk update >/dev/null 2>&1 || err '软件源更新失败。' ;;
+  esac
+  say '== 安装基础下载工具 =='
+  case $PKG in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates ;;
+    *) pkg_install curl ca-certificates ;;
+  esac
+  command -v curl >/dev/null 2>&1 || err 'curl 仍安装失败，请手动排查后重试。'
+  say '环境修复完成，接下来可运行 `seeword deps` 安装全部依赖。'
+}
 svc() {
   local action=$1 name=$2
   if [[ $INIT == systemd ]]; then systemctl "$action" "$name"
@@ -403,6 +482,11 @@ check_port_free() {
     [[ -z $(ss -H -lun "sport = :$port" 2>/dev/null) ]] || err "UDP $port 已被占用。"
   fi
 }
+# TCP 80 是否可用于 HTTP 证书验证：Nginx 在运行（可复用/接管），或 80 端口空闲
+http80_usable() {
+  svc_active nginx && return 0
+  [[ -z $(ss -H -ltn "sport = :80" 2>/dev/null) ]]
+}
 preflight_web() {
   # 安装首个 Web 协议（Reality/HY2）前的通用检查
   if ! has_reality && ! has_hy2; then
@@ -446,7 +530,7 @@ EOF
   restart_or_start nginx || err 'Nginx 无法启动 HTTP 验证站点。'
 }
 issue_cert() {
-  local domain=$1 dir owner mode token zone ipv6_http= method_file old_dir
+  local domain=$1 dir owner token zone method_file old_dir
   dir=$(cert_dir "$domain")
   owner=$dir/domain.txt
   method_file=$dir/method
@@ -475,28 +559,25 @@ issue_cert() {
     return
   fi
   install_acme
-  say '证书验证方式：1) TCP 80  2) Cloudflare DNS API'
-  read -r -p '请选择 [1/2]：' mode
-  case "$mode" in
-    1)
-      CERT_METHOD=http
-      ensure_http_challenge "$domain"
-      if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
-        err 'HTTP 80 证书申请失败，请确认 DNS 指向本机且 TCP 80 已放行。'
-      fi
-      ;;
-    2)
-      CERT_METHOD=dns
-      read -r -s -p 'Cloudflare DNS API Token：' token; printf '\n'
-      [[ -n $token ]] || err 'Token 不能为空。'
-      read -r -p 'Cloudflare Zone ID（可留空自动查找）：' zone
-      if ! CF_Token="$token" CF_Zone_ID="$zone" "$ACME" --issue --server letsencrypt --dns dns_cf -d "$domain" --keylength ec-256; then
-        unset token; err 'Cloudflare DNS 证书申请失败。'
-      fi
-      unset token
-      ;;
-    *) err '请选择 1 或 2。' ;;
-  esac
+  # 优先 TCP 80 验证；80 被占用时自动改用 DNS 验证
+  if http80_usable; then
+    CERT_METHOD=http
+    say 'TCP 80 可用，使用 HTTP 验证申请证书。'
+    ensure_http_challenge "$domain"
+    if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
+      err 'HTTP 80 证书申请失败，请确认 DNS 指向本机且 TCP 80 已放行。'
+    fi
+  else
+    CERT_METHOD=dns
+    say 'TCP 80 被占用，改用 Cloudflare DNS API 验证申请证书。'
+    read -r -s -p 'Cloudflare DNS API Token：' token; printf '\n'
+    [[ -n $token ]] || err 'Token 不能为空。'
+    read -r -p 'Cloudflare Zone ID（可留空自动查找）：' zone
+    if ! CF_Token="$token" CF_Zone_ID="$zone" "$ACME" --issue --server letsencrypt --dns dns_cf -d "$domain" --keylength ec-256; then
+      unset token; err 'Cloudflare DNS 证书申请失败。'
+    fi
+    unset token
+  fi
   printf '%s\n' "$CERT_METHOD" > "$method_file"
   chmod 600 "$method_file"
   "$ACME" --install-cert -d "$domain" --ecc \
@@ -1266,6 +1347,8 @@ tools_menu() {
 7. 备份配置
 8. 恢复配置
 9. 重载服务
+10. 安装全部依赖
+11. 修复系统环境（软件源/DNS/网络）
 0. 返回上级
 EOF
     read -r -p '请选择：' choice
@@ -1281,6 +1364,8 @@ EOF
          [[ -n $src ]] || { say '已取消。'; continue; }
          guarded restore "$src" ;;
       9) guarded reload_services ;;
+      10) guarded cmd_deps ;;
+      11) guarded fixenv ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1324,8 +1409,8 @@ main() {
   local cmd=${1:-menu}
   case $cmd in
     menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|\
-doctor|backup|restore|traffic|adduser|deluser|bbr) ;;
-    *) say '用法：xray-manager [menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|doctor|backup|restore|traffic|adduser|deluser|bbr]'; exit 2 ;;
+doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv]'; exit 2 ;;
   esac
   require_root; detect_env
   case $cmd in
@@ -1352,6 +1437,8 @@ doctor|backup|restore|traffic|adduser|deluser|bbr) ;;
     adduser) reality_adduser ;;
     deluser) reality_deluser ;;
     bbr) enable_bbr ;;
+    deps) cmd_deps ;;
+    fixenv) fixenv ;;
   esac
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

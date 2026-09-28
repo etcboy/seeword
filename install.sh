@@ -18,7 +18,14 @@ fi
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
-curl -fsSL --retry 3 "$SRC" -o "$tmp"
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL --retry 3 "$SRC" -o "$tmp"
+elif command -v wget >/dev/null 2>&1; then
+  wget -qO "$tmp" "$SRC"
+else
+  echo '需要 curl 或 wget，请先安装其中之一。' >&2; exit 1
+fi
+[[ -s $tmp ]] || { echo '下载失败，中止安装。' >&2; exit 1; }
 grep -q 'seeword' "$tmp" || { echo '下载内容异常，中止安装。' >&2; exit 1; }
 bash -n "$tmp" || { echo '下载的脚本语法校验失败，中止安装。' >&2; exit 1; }
 $SUDO install -m 755 "$tmp" "$TARGET"

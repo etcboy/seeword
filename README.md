@@ -11,6 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sud
 - 需要 root 权限；安装完成后自动进入菜单。
 - 主程序位于 `/usr/local/bin/seeword`，之后运行 `sudo seeword` 即可打开菜单。
 - 也支持子命令直达，例如 `sudo seeword reality`。
+- 极精简系统如果没有 curl，可用 wget：`wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash`。装好后若依赖缺失，运行 `sudo seeword fixenv` 修复环境，再运行 `sudo seeword deps` 安装全部依赖。
 
 ## 安装前准备
 
@@ -35,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sud
 
 | 选项 | 说明                                                                 |
 | ---- | -------------------------------------------------------------------- |
-| 1. 一键安装 Reality | 输入域名/SNI 与 TCP 端口（默认 443），选择 HTTP-80 或 Cloudflare DNS 申请 Let's Encrypt 证书。 |
+| 1. 一键安装 Reality | 输入域名/SNI 与 TCP 端口（默认 443），优先 TCP 80 验证申请 Let's Encrypt 证书；80 被占用时自动改用 Cloudflare DNS API。 |
 | 2. 一键安装 HY2     | 输入域名与 UDP 端口（默认 443）。                                     |
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
 | 4. 查看配置与状态   | 分享链接、二维码、OpenList 登录信息、服务状态。                       |
@@ -59,6 +60,8 @@ sudo seeword deluser              # Reality 删除用户
 sudo seeword backup [输出路径]     # 备份配置
 sudo seeword restore <备份文件>    # 恢复配置
 sudo seeword bbr                  # 一键开启 BBR
+sudo seeword deps                 # 安装全部依赖（curl/jq/openssl/unzip/tar/qrencode/ss/cron/nginx）
+sudo seeword fixenv               # 修复极精简系统环境（软件源/DNS/网络），解决依赖装不上
 sudo seeword reload               # 重载服务
 sudo seeword uninstall            # 一键全卸载
 sudo seeword uninstall-reality    # 只卸载 Reality
@@ -84,6 +87,7 @@ sudo seeword uninstall-ss         # 只卸载 SS2022
 
 ## 证书与续期
 
+- 申请证书时优先 TCP 80 的 HTTP 验证；若 80 端口被占用，自动改用 Cloudflare DNS API 验证（需提供 API Token）。验证方式记录在各域名证书目录的 `method` 文件中，续期沿用。
 - 证书由 acme.sh 自动续期，成功后重载 Nginx 与 Xray。
 - HTTP 验证使用 Nginx ACME webroot，续期无需停服务；DNS 验证通过 Cloudflare API 自动更新 TXT 记录。
 
@@ -93,6 +97,7 @@ sudo seeword uninstall-ss         # 只卸载 SS2022
 - 若所选端口、OpenList 5244 或 Nginx 8443 已被占用，安装会拒绝以避免冲突。
 - 客户端兼容性取决于客户端版本；HY2 请使用支持 Hysteria2 的客户端。
 - “一键全卸载”会卸载 Nginx 软件包并删除 `/root/.acme.sh`（含其管理的全部证书），执行前请确认服务器上没有其他服务依赖它们。
+- `fixenv` 会在 apt 源缺失时写入 Debian/Ubuntu 官方源（自动备份原文件）、在 DNS 失效时写入公共 DNS，属于系统级修改，执行前请确认。
 - 证书申请与公网连通性尚未在真实 VPS 验证，建议先在新服务器试运行。
 
 ## 上游文档
