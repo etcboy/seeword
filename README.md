@@ -37,12 +37,13 @@ sudo bash xray-manager.sh
 3. 一键安装 SS：自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。
 4. 更新 Xray：按照 XTLS/Xray-install 的下载和 `.dgst` SHA-256 校验方式，从 XTLS/Xray-core 官方最新正式版更新内核及归档自带的 `geoip.dat`、`geosite.dat`。
 5. 查看当前配置及服务状态：显示分享链接、二维码和 OpenList 登录信息。
-6. 一键卸载：删除本脚本安装的 Xray/OpenList 服务、数据、Nginx 站点和证书；不会卸载系统已有的 Nginx 包。
-7. 只卸载 Reality：保留 HY2 和 SS。若 HY2 仍在，Nginx 接管 TCP 443，域名继续显示 OpenList。
-8. 只卸载 HY2：保留 Reality 和 SS。
-9. 只卸载 SS：保留 Reality 和 HY2。
+6. 卸载管理：进入二级菜单。
+   - 一键全卸载：删除本脚本安装的 Xray/OpenList 服务、数据、Nginx 站点和证书；不会卸载系统已有的 Nginx 包。
+   - 只卸载 Reality：保留 HY2 和 SS。若 HY2 仍在，Nginx 接管 TCP 443，域名继续显示 OpenList。
+   - 只卸载 HY2：保留 Reality 和 SS。
+   - 只卸载 SS：保留 Reality 和 HY2。
 
-独立卸载最后一个使用域名的协议时，脚本也会移除该域名专属的 Nginx 站点、证书和 OpenList 数据；SS 如已安装会继续运行。独立卸载最后一个协议后保留管理脚本与 Xray 内核，方便再次安装；选项 6 才会卸载整个管理环境。
+独立卸载最后一个使用域名的协议时，脚本也会移除该域名专属的 Nginx 站点、证书和 OpenList 数据；SS 如已安装会继续运行。独立卸载最后一个协议后保留管理脚本与 Xray 内核，方便再次安装；只有"一键全卸载"才会卸载整个管理环境。
 
 ## 文件
 
