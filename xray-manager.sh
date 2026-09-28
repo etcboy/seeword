@@ -125,6 +125,14 @@ pkg_install() {
     apk) apk add --no-cache "$@" ;;
   esac
 }
+pkg_remove() {
+  case $PKG in
+    apt) DEBIAN_FRONTEND=noninteractive apt-get purge -y "$@" ;;
+    dnf) dnf remove -y "$@" ;;
+    yum) yum remove -y "$@" ;;
+    apk) apk del "$@" ;;
+  esac
+}
 ensure_deps() {
   local missing=() cmd
   for cmd in curl jq openssl unzip tar; do command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd"); done
@@ -1191,10 +1199,10 @@ uninstall_all() {
   require_root; detect_env
   [[ -f $STATE ]] || err '没有本脚本管理的安装。'
   local confirm
-  read -r -p '将删除 Xray、OpenList、证书、配置和账号数据。输入 DELETE 确认：' confirm
+  read -r -p '将彻底删除 Xray、Nginx（含软件包与配置）、OpenList、acme.sh、全部证书、配置与账号数据。输入 DELETE 确认：' confirm
   [[ $confirm == DELETE ]] || { say '已取消。'; return; }
   init_tmp
-  for service in xray-manager openlist-manager; do
+  for service in xray-manager openlist-manager nginx; do
     svc stop "$service" >/dev/null 2>&1 || true
     svc disable "$service" >/dev/null 2>&1 || true
   done
@@ -1205,11 +1213,15 @@ uninstall_all() {
     rm -f /etc/init.d/xray-manager /etc/init.d/openlist-manager
   fi
   remove_web_stack
+  # 卸载 Nginx 软件包（含其配置文件）
+  pkg_remove nginx
+  # 删除 acme.sh 程序及其管理的全部证书记录
+  rm -rf -- /root/.acme.sh
   rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF"
   rm -f -- "$XRAY_ASSETS/geoip.dat" "$XRAY_ASSETS/geosite.dat"
   rm -rf -- "$ROOT"
-  if command -v nginx >/dev/null 2>&1 && svc_active nginx; then nginx -t && svc reload nginx || true; fi
-  say '卸载完成。系统 Nginx 包与 acme.sh 程序仍保留。'
+  rm -f -- "$LOG_FILE"
+  say '卸载完成：Xray、Nginx、OpenList、acme.sh 及全部证书、配置、账号数据均已删除。'
 }
 
 uninstall_menu() {
