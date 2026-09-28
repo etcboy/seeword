@@ -97,6 +97,7 @@ migrate_state() {
     .version = 2
     | (if .reality and ((.reality.domain // "") == "") then .reality.domain = (.domain // "") | .reality.port = 443 else . end)
     | (if .reality and ((.reality.users // []) | length) == 0 and ((.reality.uuid // "") != "") then .reality.users = [{uuid: .reality.uuid, remark: "默认"}] else . end)
+    | (if .reality and ((.reality.fallback // 0) == 0) then .reality.fallback = 8443 else . end)
     | (if .hy2 and ((.hy2.domain // "") == "") then .hy2.domain = (.domain // "") | .hy2.port = 443 else . end)
     | del(.domain)' "$STATE" > "$tmp" && install -m 600 "$tmp" "$STATE"
   rm -f "$tmp"
@@ -389,7 +390,7 @@ render_config() {
       (if $s.reality then [{tag:"reality",listen:$listen,port:$s.reality.port,protocol:"vless",
         settings:{clients:[$s.reality.users[] | {id:.uuid,flow:"xtls-rprx-vision",email:("reality:"+.uuid)}],decryption:"none"},
         streamSettings:{network:"tcp",security:"reality",
-          realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
+          realitySettings:{target:"127.0.0.1:\($s.reality.fallback // 8443)",serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
       + (if $s.hy2 then [{tag:"hy2",listen:$listen,port:$s.hy2.port,protocol:"hysteria",
         settings:{version:2,clients:[{auth:$s.hy2.password,email:"hy2"}]},
         streamSettings:{network:"hysteria",security:"tls",
@@ -550,7 +551,8 @@ ask_reality_port() {
   input=${input:-443}
   [[ $input =~ ^[0-9]+$ ]] || err '端口无效。'
   (( input >= 1 && input <= 65535 )) || err '端口无效。'
-  (( input != 8443 && input != 80 )) || err '8443/80 为保留端口，请换一个。'
+  (( input != 80 )) || err '80 为保留端口，请换一个。'
+  (( input < 8443 || input > 8462 )) || err '8443-8462 为 Reality 回落保留端口段，请换一个。'
   if (( input == 443 )) && [[ -f $NGINX_CONF ]] && grep -qE 'listen[[:space:]]+443' "$NGINX_CONF"; then
     say '提示：TCP 443 当前由本站点 Nginx 提供 Web 服务，安装后将交由 Reality 接管（Web 界面改走 Reality 回落，继续可用）。'
   else
@@ -577,17 +579,28 @@ check_port_free() {
     [[ -z $(ss -H -lun "sport = :$port" 2>/dev/null) ]] || err "UDP $port 已被占用。"
   fi
 }
+# Reality 回落内部端口：优先 8443，被占用时依次尝试 8444、8445…
+# 回落只是 Xray 转发非 Reality 流量的本地目标，端口号不影响功能
+# $1 可选：要排除的端口（用户选的 Reality 公网端口）
+find_reality_fallback_port() {
+  local p exclude=${1:-0}
+  for p in $(seq 8443 8462); do
+    (( p != exclude )) || continue
+    if [[ -z $(ss -H -ltn "sport = :$p" 2>/dev/null) ]]; then
+      printf '%s' "$p"
+      return 0
+    fi
+  done
+  err '8443-8462 均被占用，无法为 Reality 分配回落端口。'
+}
 # TCP 80 是否可用于 HTTP 证书验证：Nginx 在运行（可复用/接管），或 80 端口空闲
 http80_usable() {
   svc_active nginx && return 0
   [[ -z $(ss -H -ltn "sport = :80" 2>/dev/null) ]]
 }
 preflight_web() {
-  # 安装首个 Web 协议前的通用检查；8443 仅 Reality 回落用，HY2 不需要
-  local proto=${1:-}
-  if [[ $proto == reality ]] && ! has_reality && ! has_hy2; then
-    check_port_free tcp 8443   # Reality 回落内部端口，保留
-  fi
+  # 安装首个 Web 协议前的通用检查；Reality 回落端口由 find_reality_fallback_port 动态分配，HY2 不需要
+  :
   # OpenList 已改为独立安装，其 5244 端口由独立安装流程检查
 }
 
@@ -898,9 +911,10 @@ EOF
 }
 
 write_nginx() {
-  local state_file=$1 r_domain r_port h_domain web_domain
+  local state_file=$1 r_domain r_port r_fallback h_domain web_domain
   r_domain=$(jq -r '.reality.domain // empty' "$state_file")
   r_port=$(jq -r '.reality.port // 443' "$state_file")
+  r_fallback=$(jq -r '.reality.fallback // 8443' "$state_file")
   h_domain=$(jq -r '.hy2.domain // empty' "$state_file")
   web_domain=${r_domain:-$h_domain}
   local backup= ipv6_http= ipv6_https= d dir
@@ -936,9 +950,9 @@ server {
 }
 EOF
   done < <(jq -r '[.reality.domain, .hy2.domain] | map(select(. != null)) | unique | .[]' "$state_file")
-  # Reality 回落块（xray reality 的 target，固定 127.0.0.1:8443）
+  # Reality 回落块（xray reality 的 target，127.0.0.1:回落端口；8443 被占用时自动顺延）
   if [[ -n $r_domain ]]; then
-    nginx_server_block '    listen 127.0.0.1:8443 ssl;' "$r_domain" "$(cert_dir "$r_domain")"
+    nginx_server_block "    listen 127.0.0.1:$r_fallback ssl;" "$r_domain" "$(cert_dir "$r_domain")"
   fi
   # 公网 443 Web 块：Reality 未占用 443/tcp 时提供
   if [[ -z $r_domain || $r_port != 443 ]]; then
@@ -982,12 +996,14 @@ install_reality() {
   ensure_web_deps
   ask_domain reality || return 1
   ask_reality_port
-  preflight_web reality
+  local fallback_port
+  fallback_port=$(find_reality_fallback_port "$RPORT")
   say ''
   say '即将安装：'
   say '  协议：Reality (VLESS + TCP)'
   say "  域名/SNI：$DOMAIN"
   say "  TCP 端口：$RPORT"
+  say "  回落端口：127.0.0.1:$fallback_port（8443 被占用时自动顺延）"
   if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
   confirm_go '确认开始安装' || return 1
   step 1 4 '申请证书'
@@ -1002,8 +1018,8 @@ install_reality() {
   [[ -n $private && -n $public ]] || err 'Xray 密钥生成失败。'
   uuid=$($XRAY_BIN uuid)
   sid=$(random_hex 8)
-  jq --arg d "$DOMAIN" --argjson port "$RPORT" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
-    '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,users:[{uuid:$id,remark:"默认"}]}' \
+  jq --arg d "$DOMAIN" --argjson port "$RPORT" --argjson fallback "$fallback_port" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
+    '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,fallback:$fallback,users:[{uuid:$id,remark:"默认"}]}' \
     "$STATE" > "$TMP_DIR/state-new"
   step 3 4 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
@@ -1057,7 +1073,8 @@ install_ss() {
   [[ $port =~ ^[0-9]+$ && ${#port} -le 5 ]] || err '端口无效。'
   port=$((10#$port))
   ((port >= 1 && port <= 65535)) || err '端口无效。'
-  for p in 80 443 8443 5244; do (( port != p )) || err "端口 $port 为保留端口，请换一个。"; done
+  for p in 80 443 5244; do (( port != p )) || err "端口 $port 为保留端口，请换一个。"; done
+  (( port < 8443 || port > 8462 )) || err "端口 $port 在 Reality 回落保留段（8443-8462）内，请换一个。"
   check_port_free tcp "$port"; check_port_free udp "$port"
   address=$(public_address)
   say ''
