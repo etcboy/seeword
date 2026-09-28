@@ -111,6 +111,7 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 - OpenList 管理员为 `admin`，密码首次安装时随机生成并保存；请及时修改并妥善保管，避免公开敏感文件。OpenList 需在主菜单单独安装，不再随 Reality/HY2 自动安装。
 - 若所选端口或 Nginx 8443 已被占用，安装会拒绝以避免冲突；单独安装 OpenList 时若 5244 被占用同样会拒绝。
 - 客户端兼容性取决于客户端版本；HY2 请使用支持 Hysteria2 的客户端。
+- 分享链接中的连接地址直接使用服务器 IP（IPv6 自动加方括号），不走域名解析；SNI 仍为你输入的域名。
 - “一键全卸载”会卸载 Nginx 软件包并删除 `/root/.acme.sh`（含其管理的全部证书），执行前请确认服务器上没有其他服务依赖它们。
 - `fixenv` 会在 apt 源缺失时写入 Debian/Ubuntu 官方源（自动备份原文件）、在 DNS 失效时写入公共 DNS，属于系统级修改，执行前请确认。
 

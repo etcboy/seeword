@@ -1085,15 +1085,30 @@ show_link() {
   qrencode -t ANSIUTF8 "$link"
 }
 
+# 分享链接用的连接地址：直接用 IP（IPv6 加方括号），不走域名解析
+link_host() {
+  local domain=$1 ip
+  # 优先 IPv6（纯 v6 / 双栈环境），没有再用 IPv4
+  ip=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1 | grep -v '^fe80' | head -n1)
+  if [[ -n $ip ]]; then
+    printf '[%s]' "$ip"
+  else
+    ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | head -n1)
+    [[ -n $ip ]] || ip=$(curl -fsSL --max-time 8 https://api.ipify.org 2>/dev/null)
+    printf '%s' "${ip:-$domain}"
+  fi
+}
+
 # 生成单个 Reality 用户的分享链接
 reality_link() {
-  local uuid=$1 remark=$2 r_domain r_port pub sid frag
+  local uuid=$1 remark=$2 r_domain r_port pub sid frag host
   r_domain=$(state_get '.reality.domain'); r_port=$(state_get '.reality.port')
   pub=$(state_get '.reality.public'); sid=$(state_get '.reality.sid')
+  host=$(link_host "$r_domain")
   frag="Reality"
   [[ -z ${remark:-} || $remark == 默认 ]] || frag="Reality-$remark"
   printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&type=tcp#%s' \
-    "$uuid" "$r_domain" "$r_port" "$r_domain" "$pub" "$sid" "$frag"
+    "$uuid" "$host" "$r_port" "$r_domain" "$pub" "$sid" "$frag"
 }
 
 # 输出所有分享链接，每行：标题<TAB>链接
@@ -1107,7 +1122,7 @@ collect_links() {
   fi
   if has_hy2; then
     h_domain=$(state_get '.hy2.domain'); h_port=$(state_get '.hy2.port'); pass=$(state_get '.hy2.password')
-    printf '%s\t%s\n' 'HY2' "hysteria2://$pass@$h_domain:$h_port?sni=$h_domain#HY2"
+    printf '%s\t%s\n' 'HY2' "hysteria2://$pass@$(link_host "$h_domain"):$h_port?sni=$h_domain#HY2"
   fi
   if has_ss; then
     pass=$(state_get '.ss.password'); port=$(state_get '.ss.port'); address=$(state_get '.ss.address')
