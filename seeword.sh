@@ -387,11 +387,11 @@ render_config() {
      routing:{rules:[{type:"field",inboundTag:["api"],outboundTag:"api"}]},
      inbounds:(
       (if $s.reality then [{tag:"reality",listen:$listen,port:$s.reality.port,protocol:"vless",
-        settings:{users:[$s.reality.users[] | {id:.uuid,flow:"xtls-rprx-vision",email:("reality:"+.uuid)}],decryption:"none"},
+        settings:{clients:[$s.reality.users[] | {id:.uuid,flow:"xtls-rprx-vision",email:("reality:"+.uuid)}],decryption:"none"},
         streamSettings:{network:"tcp",security:"reality",
           realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
       + (if $s.hy2 then [{tag:"hy2",listen:$listen,port:$s.hy2.port,protocol:"hysteria",
-        settings:{version:2,users:[{auth:$s.hy2.password,email:"hy2"}]},
+        settings:{version:2,clients:[{auth:$s.hy2.password,email:"hy2"}]},
         streamSettings:{network:"hysteria",security:"tls",
           hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},
           tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
