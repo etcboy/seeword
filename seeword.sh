@@ -583,8 +583,9 @@ http80_usable() {
   [[ -z $(ss -H -ltn "sport = :80" 2>/dev/null) ]]
 }
 preflight_web() {
-  # 安装首个 Web 协议（Reality/HY2）前的通用检查
-  if ! has_reality && ! has_hy2; then
+  # 安装首个 Web 协议前的通用检查；8443 仅 Reality 回落用，HY2 不需要
+  local proto=${1:-}
+  if [[ $proto == reality ]] && ! has_reality && ! has_hy2; then
     check_port_free tcp 8443   # Reality 回落内部端口，保留
   fi
   # OpenList 已改为独立安装，其 5244 端口由独立安装流程检查
@@ -981,7 +982,7 @@ install_reality() {
   ensure_web_deps
   ask_domain reality || return 1
   ask_reality_port
-  preflight_web
+  preflight_web reality
   say ''
   say '即将安装：'
   say '  协议：Reality (VLESS + TCP)'
@@ -1020,7 +1021,7 @@ install_hy2() {
   ensure_web_deps
   ask_domain hy2 || return 1
   ask_port HPORT udp 443 'HY2 UDP 端口'
-  preflight_web
+  preflight_web hy2
   say ''
   say '即将安装：'
   say '  协议：Hysteria2 (UDP)'
