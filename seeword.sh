@@ -1085,17 +1085,25 @@ show_link() {
   qrencode -t ANSIUTF8 "$link"
 }
 
-# 分享链接用的连接地址：直接用 IP（IPv6 加方括号），不走域名解析
+# 分享链接用的连接地址：优先公网 IPv4，没有可用 V4 时才用 IPv6（加方括号），都不行回退域名
 link_host() {
   local domain=$1 ip
-  # 优先 IPv6（纯 v6 / 双栈环境），没有再用 IPv4
+  # 先找公网 IPv4（排除私网/NAT 地址）
+  ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | grep -v '^100\.' | head -n1)
+  if [[ -z $ip ]]; then
+    # 本机无公网 V4（如 NAT），尝试外网查询
+    ip=$(curl -fsSL --max-time 8 -4 https://api.ipify.org 2>/dev/null)
+  fi
+  if [[ -n $ip ]]; then
+    printf '%s' "$ip"
+    return 0
+  fi
+  # V4 不可用，用 IPv6
   ip=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1 | grep -v '^fe80' | head -n1)
   if [[ -n $ip ]]; then
     printf '[%s]' "$ip"
   else
-    ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | head -n1)
-    [[ -n $ip ]] || ip=$(curl -fsSL --max-time 8 https://api.ipify.org 2>/dev/null)
-    printf '%s' "${ip:-$domain}"
+    printf '%s' "$domain"
   fi
 }
 
