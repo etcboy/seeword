@@ -65,6 +65,8 @@ open_firewall_port() {
 
 say() { printf '%s\n' "$*"; }
 err() { printf '错误：%s\n' "$*" >&2; exit 1; }
+# 系统是否有 IPv6 协议栈（注意：/proc 文件 ls 显示大小为 0，不能用 -s 判断，必须读内容）
+has_ipv6() { grep -q . /proc/net/if_inet6 2>/dev/null; }
 cleanup() {
   if [[ -f $ACME_TMP_CONF ]]; then
     rm -f -- "$ACME_TMP_CONF"
@@ -373,7 +375,10 @@ EOF
 
 render_config() {
   local input=$1 output=$2
-  jq -n --slurpfile state "$input" '
+  # 双栈监听：有 IPv6 时用 ::（Linux 默认双栈，同时接受 v4/v6），纯 v4 时用 0.0.0.0
+  local listen=0.0.0.0
+  has_ipv6 && listen='::'
+  jq -n --slurpfile state "$input" --arg listen "$listen" '
     $state[0] as $s |
     {log:{loglevel:"warning"},
      api:{tag:"api",services:["StatsService"]},
@@ -381,16 +386,16 @@ render_config() {
      policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}},
      routing:{rules:[{type:"field",inboundTag:["api"],outboundTag:"api"}]},
      inbounds:(
-      (if $s.reality then [{tag:"reality",listen:"0.0.0.0",port:$s.reality.port,protocol:"vless",
+      (if $s.reality then [{tag:"reality",listen:$listen,port:$s.reality.port,protocol:"vless",
         settings:{users:[$s.reality.users[] | {id:.uuid,flow:"xtls-rprx-vision",email:("reality:"+.uuid)}],decryption:"none"},
         streamSettings:{network:"tcp",security:"reality",
           realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
-      + (if $s.hy2 then [{tag:"hy2",listen:"0.0.0.0",port:$s.hy2.port,protocol:"hysteria",
+      + (if $s.hy2 then [{tag:"hy2",listen:$listen,port:$s.hy2.port,protocol:"hysteria",
         settings:{version:2,users:[{auth:$s.hy2.password,email:"hy2"}]},
         streamSettings:{network:"hysteria",security:"tls",
           hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},
           tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
-      + (if $s.ss then [{tag:"ss",listen:"0.0.0.0",port:$s.ss.port,protocol:"shadowsocks",
+      + (if $s.ss then [{tag:"ss",listen:$listen,port:$s.ss.port,protocol:"shadowsocks",
         settings:{method:"2022-blake3-aes-128-gcm",password:$s.ss.password,network:"tcp,udp"}}] else [] end)
       + [{tag:"api",listen:"127.0.0.1",port:10085,protocol:"dokodemo-door",settings:{address:"127.0.0.1"}}]
     ),outbounds:[{protocol:"freedom",tag:"direct"}]}
@@ -407,7 +412,7 @@ rollback_nginx() {
 commit_state() {
   local new_state=$1 conf_bak=$TMP_DIR/config-old state_bak=$TMP_DIR/state-old
   render_config "$new_state" "$TMP_DIR/config-new"
-  "$XRAY_BIN" run -test -config "$TMP_DIR/config-new" || { rollback_nginx; err 'Xray 配置验证失败。'; }
+  "$XRAY_BIN" run -test -format json -config "$TMP_DIR/config-new" || { rollback_nginx; err 'Xray 配置验证失败。'; }
   cp -a "$STATE" "$state_bak"
   [[ ! -f $XRAY_CONF ]] || cp -a "$XRAY_CONF" "$conf_bak"
   install -m 600 "$new_state" "$STATE"
@@ -606,7 +611,7 @@ ensure_http_challenge() {
     return 0
   fi
   if ! svc_active nginx; then check_port_free tcp 80; fi
-  if [[ -s /proc/net/if_inet6 ]]; then ipv6_http='listen [::]:80;'; fi
+  if has_ipv6; then ipv6_http='listen [::]:80;'; fi
   cat >> "$ACME_TMP_CONF" <<EOF
 server {
     listen 80;
@@ -898,7 +903,7 @@ write_nginx() {
   h_domain=$(jq -r '.hy2.domain // empty' "$state_file")
   web_domain=${r_domain:-$h_domain}
   local backup= ipv6_http= ipv6_https= d dir
-  if [[ -s /proc/net/if_inet6 ]]; then
+  if has_ipv6; then
     ipv6_http='listen [::]:80;'
     ipv6_https='listen [::]:443 ssl;'
   fi
@@ -1001,7 +1006,7 @@ install_reality() {
     "$STATE" > "$TMP_DIR/state-new"
   step 3 4 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
-  "$XRAY_BIN" run -test -config "$TMP_DIR/check-config" || err 'Reality 配置验证失败。'
+  "$XRAY_BIN" run -test -format json -config "$TMP_DIR/check-config" || err 'Reality 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
   sync_openlist_siteurl
@@ -1035,7 +1040,7 @@ install_hy2() {
     '.hy2={password:$pass,cert:$cert,key:$key,domain:$d,port:$port}' "$STATE" > "$TMP_DIR/state-new"
   step 3 4 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
-  "$XRAY_BIN" run -test -config "$TMP_DIR/check-config" || err 'HY2 配置验证失败。'
+  "$XRAY_BIN" run -test -format json -config "$TMP_DIR/check-config" || err 'HY2 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
   sync_openlist_siteurl
@@ -1422,6 +1427,8 @@ remove_cert() {
   owner=$dir/domain.txt
   [[ -f $owner && $(cat "$owner") == "$domain" ]] || return 0
   [[ ! -x $ACME ]] || "$ACME" --remove -d "$domain" --ecc >/dev/null 2>&1 || true
+  # acme.sh --remove 可能残留域名目录（含旧 key），导致重装时 --issue 拒绝覆盖；彻底删除
+  rm -rf -- "${ACME%/*}/${domain}_ecc" "${ACME%/*}/${domain}"
   rm -rf -- "$dir"
 }
 # 移除整个 Web 栈：Nginx 站点、全部本脚本管理的证书
@@ -1647,7 +1654,7 @@ doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv) ;;
   esac
   require_root; detect_env
   case $cmd in
-    menu|info|status|traffic|doctor) ;;
+    menu|info|status|traffic|doctor|reload) ;;
     *) take_lock; setup_logging ;;
   esac
   case $cmd in

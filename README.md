@@ -103,6 +103,7 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 - 申请证书时优先 TCP 80 的 HTTP 验证；若 80 端口被占用，自动改用 Cloudflare DNS API 验证（需提供 API Token）。验证方式记录在各域名证书目录的 `method` 文件中，续期沿用。
 - 证书由 acme.sh 自动续期，成功后重载 Nginx 与 Xray。
 - HTTP 验证使用 Nginx ACME webroot，续期无需停服务；DNS 验证通过 Cloudflare API 自动更新 TXT 记录。
+- 纯 IPv6 服务器已验证：ACME 临时站点与主站点自动监听 `[::]:80`/`[::]:443`，Reality/HY2/SS 入站为双栈监听（`::`），Let's Encrypt 经 IPv6 的 HTTP-01 验证可正常签发。
 
 ## 注意事项
 
@@ -111,7 +112,6 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 - 客户端兼容性取决于客户端版本；HY2 请使用支持 Hysteria2 的客户端。
 - “一键全卸载”会卸载 Nginx 软件包并删除 `/root/.acme.sh`（含其管理的全部证书），执行前请确认服务器上没有其他服务依赖它们。
 - `fixenv` 会在 apt 源缺失时写入 Debian/Ubuntu 官方源（自动备份原文件）、在 DNS 失效时写入公共 DNS，属于系统级修改，执行前请确认。
-- 证书申请与公网连通性尚未在真实 VPS 验证，建议先在新服务器试运行。
 
 ## 上游文档
 
