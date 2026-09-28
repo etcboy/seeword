@@ -1175,33 +1175,6 @@ update_core() {
   fi
   install_xray_core
 }
-# 更新 Seeword 脚本本身（与“更新 Xray 内核”不同）：从 GitHub 拉取最新 seeword.sh 并替换
-update_script() {
-  require_root; detect_env
-  local src=${SEEWORLD_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/seeword.sh}
-  local tmp bak
-  tmp=$(mktemp) || err '创建临时文件失败。'
-  trap 'rm -f "$tmp"' RETURN
-  say '正在从 GitHub 获取最新脚本…'
-  if command -v curl >/dev/null 2>&1; then
-    curl -fsSL --retry 3 "$src" -o "$tmp" || err '下载失败，请检查网络。'
-  elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$tmp" "$src" || err '下载失败，请检查网络。'
-  else
-    err '需要 curl 或 wget，请先安装其中之一。'
-  fi
-  [[ -s $tmp ]] || err '下载内容为空，中止更新。'
-  grep -q 'seeword' "$tmp" || err '下载内容异常，中止更新。'
-  bash -n "$tmp" || err '下载的脚本语法校验失败，中止更新。'
-  if cmp -s "$tmp" "$SELF"; then
-    say '脚本已是最新，无需更新。'
-    return 0
-  fi
-  bak=$SELF.bak
-  cp -a "$SELF" "$bak" || err '备份当前脚本失败。'
-  install -m 755 "$tmp" "$SELF" || { cp -a "$bak" "$SELF"; err '替换脚本失败，已恢复备份。'; }
-  say '脚本已更新到最新版本（旧版本备份为 seeword.bak）。'
-}
 # 一键体检：检查状态文件、内核、配置、服务、端口、证书、API
 doctor() {
   require_root; detect_env
@@ -1655,7 +1628,6 @@ menu() {
 5. 查看配置、分享链接和服务状态
 6. 更多工具
 7. 卸载管理
-8. 更新 Seeword 脚本
 0. 退出
 EOF
     read -r -p '请选择：' choice
@@ -1667,21 +1639,49 @@ EOF
       5) show_info ;;
       6) tools_menu ;;
       7) uninstall_menu ;;
-      8) guarded update_script ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
   done
 }
 
+# 一键安装前自动更新脚本到最新版：静默拉取，下载失败或无变化则直接继续；
+# 有更新则替换自身并重新执行相同命令（旧版本备份为 seeword.bak）
+ensure_latest_script() {
+  local cmd=$1 tmp
+  local src=${SEEWORLD_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/seeword.sh}
+  tmp=$(mktemp) || return 0
+  trap 'rm -f "$tmp"' RETURN
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 2 --max-time 15 "$src" -o "$tmp" 2>/dev/null || return 0
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qT 15 -O "$tmp" "$src" 2>/dev/null || return 0
+  else
+    return 0
+  fi
+  [[ -s $tmp ]] || return 0
+  grep -q 'seeword' "$tmp" 2>/dev/null || return 0
+  bash -n "$tmp" 2>/dev/null || return 0
+  cmp -s "$tmp" "$SELF" && return 0
+  say '检测到脚本有新版本，正在更新…'
+  cp -a "$SELF" "$SELF.bak" 2>/dev/null || true
+  install -m 755 "$tmp" "$SELF" 2>/dev/null || return 0
+  say '脚本已更新，重新执行安装…'
+  exec "$SELF" "$cmd"
+}
+
 main() {
   local cmd=${1:-menu}
   case $cmd in
-    menu|reality|hy2|ss|openlist|update|update-script|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
+    menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
 doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv) ;;
-    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|update-script|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv]'; exit 2 ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv]'; exit 2 ;;
   esac
   require_root; detect_env
+  # 一键安装类命令先自动拉取最新脚本（静默，失败不阻塞）
+  case $cmd in
+    reality|hy2|ss|openlist) ensure_latest_script "$cmd" ;;
+  esac
   case $cmd in
     menu|info|status|traffic|doctor|reload) ;;
     *) take_lock; setup_logging ;;
@@ -1693,7 +1693,6 @@ doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv) ;;
     ss) install_ss ;;
     openlist) install_openlist_standalone ;;
     update) update_core ;;
-    update-script) update_script ;;
     info) show_info ;;
     status) show_status ;;
     uninstall) uninstall_all ;;

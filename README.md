@@ -64,7 +64,6 @@ sudo seeword openlist             # 单独安装 OpenList（SNI 伪装，可选�
 sudo seeword info                 # 查看配置、分享链接与状态
 sudo seeword status               # 查看服务状态
 sudo seeword update               # 更新 Xray 内核与地理数据（已是最新则跳过）
-sudo seeword update-script        # 更新 Seeword 脚本本身到最新版本（与上面不同）
 sudo seeword doctor               # 一键体检
 sudo seeword traffic              # 流量统计（Xray 启动后累计，重启后清零）
 sudo seeword adduser [备注]             # Reality 添加用户；直接给备注则一步完成并显示链接和二维码
@@ -108,6 +107,7 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 
 ## 注意事项
 
+- 一键安装命令（`reality`/`hy2`/`ss`/`openlist`）执行前会自动从 GitHub 拉取最新脚本，有更新时替换并重新执行；拉取失败不影响安装，会继续用当前版本。
 - OpenList 管理员为 `admin`，密码首次安装时随机生成并保存；请及时修改并妥善保管，避免公开敏感文件。OpenList 需在主菜单单独安装，不再随 Reality/HY2 自动安装。
 - 若所选端口或 Nginx 8443 已被占用，安装会拒绝以避免冲突；单独安装 OpenList 时若 5244 被占用同样会拒绝。
 - 客户端兼容性取决于客户端版本；HY2 请使用支持 Hysteria2 的客户端。
