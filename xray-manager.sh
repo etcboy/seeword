@@ -130,9 +130,27 @@ release_asset() {
   say "已验证 $asset"
 }
 
+# Follow XTLS/Xray-install's release URL and .dgst SHA-256 verification scheme.
+# Keep our own service and configuration so Reality, HY2 and SS remain independent.
+download_xray_official() {
+  local asset=$1 dest=$2 metadata tag url expected actual
+  metadata=$(curl -fsSL --retry 3 https://api.github.com/repos/XTLS/Xray-core/releases/latest) || err '获取 Xray 官方发布信息失败。'
+  tag=$(jq -r '.tag_name // empty' <<< "$metadata")
+  [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9.-]+)?$ ]] || err 'Xray 官方版本号无效。'
+  jq -e --arg name "$asset" '.assets[] | select(.name == $name)' <<< "$metadata" >/dev/null || err "Xray 官方版本 $tag 未提供 $asset。"
+  url="https://github.com/XTLS/Xray-core/releases/download/$tag/$asset"
+  curl -fL --retry 3 --output "$dest" "$url" || err "下载 Xray 官方文件 $asset 失败。"
+  curl -fL --retry 3 --output "$dest.dgst" "$url.dgst" || err "下载 $asset.dgst 校验文件失败。"
+  expected=$(awk -F '= ' '/256=/ {print $2; exit}' "$dest.dgst" | tr -d '\r\n')
+  [[ $expected =~ ^[[:xdigit:]]{64}$ ]] || err 'Xray 官方校验文件格式无效。'
+  actual=$(sha256sum "$dest" | cut -d' ' -f1)
+  [[ ${actual,,} == ${expected,,} ]] || err "$asset SHA-256 校验失败。"
+  say "已按 XTLS/Xray-install 官方方式验证 $asset ($tag)"
+}
+
 install_xray_core() {
   init_tmp; arch_names
-  release_asset XTLS/Xray-core "$XRAY_ASSET" "$TMP_DIR/xray.zip"
+  download_xray_official "$XRAY_ASSET" "$TMP_DIR/xray.zip"
   unzip -q -o "$TMP_DIR/xray.zip" -d "$TMP_DIR/xray-new"
   [[ -f $TMP_DIR/xray-new/xray && -f $TMP_DIR/xray-new/geoip.dat && -f $TMP_DIR/xray-new/geosite.dat ]] || err 'Xray 归档缺少必需文件。'
   chmod 755 "$TMP_DIR/xray-new/xray"

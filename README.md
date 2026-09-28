@@ -9,11 +9,19 @@
 - 以 root 身份运行；支持 Debian/Ubuntu、RHEL/Fedora/CentOS 8+、Alpine，服务管理支持 systemd 和 OpenRC。实际可用架构取决于上游当期是否发布对应的 Xray/OpenList 二进制，以及发行版是否提供 Nginx、qrencode 等依赖。脚本会在下载前检查。
 - Cloudflare DNS 验证需要具有该域名 DNS 编辑权限的 API Token。Token 只在交互时读取，acme.sh 会保存续期所需凭据，请保护 `/root/.acme.sh`。
 
+一键安装（整行复制到服务器终端）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh -o xray-manager.sh && sudo bash xray-manager.sh
+```
+
+如果已经下载脚本，也可以运行：
+
 ```bash
 sudo bash xray-manager.sh
 ```
 
-仓库发布后也可以在服务器上直接获取：
+分步下载和执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh -o xray-manager.sh
@@ -27,7 +35,7 @@ sudo bash xray-manager.sh
 1. 一键安装 Reality：输入自己的域名/SNI，选择 HTTP 80 或 Cloudflare DNS 申请 Let's Encrypt 证书。Xray 占用 TCP 443，未通过 Reality 认证的 HTTPS 请求回落到本机 Nginx，再反代 OpenList。
 2. 一键安装 HY2：同一域名及证书，Xray 占用 UDP 443。若未安装 Reality，Nginx 直接监听 TCP 443。
 3. 一键安装 SS：自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。
-4. 更新 Xray：从 XTLS 官方最新正式版更新内核及归档自带的 `geoip.dat`、`geosite.dat`。
+4. 更新 Xray：按照 XTLS/Xray-install 的下载和 `.dgst` SHA-256 校验方式，从 XTLS/Xray-core 官方最新正式版更新内核及归档自带的 `geoip.dat`、`geosite.dat`。
 5. 查看当前配置及服务状态：显示分享链接、二维码和 OpenList 登录信息。
 6. 一键卸载：删除本脚本安装的 Xray/OpenList 服务、数据、Nginx 站点和证书；不会卸载系统已有的 Nginx 包。
 7. 只卸载 Reality：保留 HY2 和 SS。若 HY2 仍在，Nginx 接管 TCP 443，域名继续显示 OpenList。
@@ -51,6 +59,7 @@ sudo bash xray-manager.sh
 
 ## 说明
 
+- XTLS/Xray-install 是安装脚本，不提供独立的内核镜像。它从 XTLS/Xray-core 官方发布页下载文件并验证同名 `.dgst`；本项目采用相同的下载和校验方式，同时保留自己的服务与配置管理。OpenList 仍从其官方发布页下载，Nginx 等依赖由系统包管理器安装。
 - 证书由 acme.sh 自动续期，成功续期后重载 Nginx 和 Xray。HTTP 验证使用 Nginx 的 ACME webroot，续期时无需停服务；DNS 验证由 Cloudflare API 自动更新 TXT 记录。
 - OpenList 的管理员用户名为 `admin`，密码在首次安装时随机生成并保存。请按需修改 OpenList 配置和存储内容，避免公开敏感文件。
 - 同一服务器已有监听 TCP 443、UDP 443、OpenList 5244、Nginx 8443 的服务时，安装会拒绝占用端口。
@@ -59,9 +68,8 @@ sudo bash xray-manager.sh
 
 ## 上游文档
 
-- [Xray 安装与平台支持](https://xtls.github.io/en/document/install)
-- [Xray Reality](https://xtls.github.io/en/config/transports/reality.html)
-- [Xray Hysteria](https://xtls.github.io/en/config/inbounds/hysteria.html)
-- [Xray Shadowsocks](https://xtls.github.io/en/config/inbounds/shadowsocks.html)
+- [XTLS/Xray-install 中文说明](https://github.com/XTLS/Xray-install/blob/main/README_zh-Hans.md)
+- [XTLS/Xray-core 官方仓库](https://github.com/XTLS/Xray-core)
+- [XTLS/Xray 官方文档源代码](https://github.com/XTLS/Xray-docs-next)
 - [acme.sh](https://github.com/acmesh-official/acme.sh)
-- [OpenList 手动安装](https://pages.doc.oplist.org/guide/installation/manual)
+- [OpenList 官方仓库](https://github.com/OpenListTeam/OpenList)
