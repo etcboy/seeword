@@ -1,4 +1,4 @@
-# 个人 Xray 管理脚本
+# Xray 管理脚本
 
 一个面向自用服务器的 Bash 菜单脚本。支持同时部署 VLESS + Reality（TCP 443）、Hysteria2（UDP 443）和 Shadowsocks 2022（自选端口），并管理 Xray、Nginx、acme.sh、OpenList。
 
