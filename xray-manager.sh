@@ -17,6 +17,45 @@ SELF=/usr/local/bin/xray-manager
 TMP_DIR=
 INIT=
 PKG=
+LOG_FILE=/var/log/xray-manager.log
+
+step() { printf '\n== [%s/%s] %s ==\n' "$1" "$2" "$3"; }
+
+confirm_go() {
+  local ans
+  read -r -p "$1 [y/N]：" ans
+  [[ ${ans,,} == y ]] || { say '已取消。'; return 1; }
+}
+
+take_lock() {
+  command -v flock >/dev/null 2>&1 || err '缺少 flock 工具。'
+  exec 200>/run/xray-manager.lock 2>/dev/null || err '无法创建锁文件 /run/xray-manager.lock。'
+  flock -n 200 || err '另一个 xray-manager 正在运行，请稍后再试。'
+}
+
+setup_logging() {
+  [[ -d /var/log ]] || install -d -m 755 /var/log
+  touch "$LOG_FILE" 2>/dev/null || return 0
+  chmod 600 "$LOG_FILE"
+  exec > >(tee -a "$LOG_FILE") 2>&1
+}
+
+open_firewall_port() {
+  local proto=$1 port=$2
+  if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
+    ufw allow "$port/$proto" >/dev/null 2>&1 || true
+    return 0
+  fi
+  if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port="$port/$proto" >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+    return 0
+  fi
+  if command -v iptables >/dev/null 2>&1; then
+    iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
+      iptables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
+  fi
+}
 
 say() { printf '%s\n' "$*"; }
 err() { printf '错误：%s\n' "$*" >&2; exit 1; }
@@ -33,13 +72,39 @@ require_root() { [[ $EUID -eq 0 ]] || err '请以 root 身份运行。'; }
 init_tmp() { [[ -n $TMP_DIR ]] || TMP_DIR=$(mktemp -d); }
 state_init() {
   install -d -m 700 "$ROOT" /etc/xray "$XRAY_ASSETS"
-  [[ -f $STATE ]] || printf '%s\n' '{"domain":"","reality":null,"hy2":null,"ss":null}' > "$STATE"
+  [[ -f $STATE ]] || printf '%s\n' '{"version":2,"reality":null,"hy2":null,"ss":null}' > "$STATE"
   chmod 600 "$STATE"
+  migrate_state
 }
-state_get() { jq -r "$1 // empty" "$STATE"; }
-has_reality() { [[ $(jq -r '.reality != null' "$STATE") == true ]]; }
-has_hy2() { [[ $(jq -r '.hy2 != null' "$STATE") == true ]]; }
-has_ss() { [[ $(jq -r '.ss != null' "$STATE") == true ]]; }
+
+# 将旧版 state（顶层共用 domain、reality/hy2 无独立域名端口、单用户）升级到 v2。
+migrate_state() {
+  [[ -f $STATE ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  local v tmp
+  v=$(jq -r '.version // 1' "$STATE" 2>/dev/null || echo 1)
+  (( v >= 2 )) && return 0
+  tmp=$(mktemp)
+  jq '
+    .version = 2
+    | (if .reality and ((.reality.domain // "") == "") then .reality.domain = (.domain // "") | .reality.port = 443 else . end)
+    | (if .reality and ((.reality.users // []) | length) == 0 and ((.reality.uuid // "") != "") then .reality.users = [{uuid: .reality.uuid, remark: "默认"}] else . end)
+    | (if .hy2 and ((.hy2.domain // "") == "") then .hy2.domain = (.domain // "") | .hy2.port = 443 else . end)
+    | del(.domain)' "$STATE" > "$tmp" && install -m 600 "$tmp" "$STATE"
+  rm -f "$tmp"
+  say '状态文件已升级到新版本。' >&2
+}
+# 任何读取 state 的入口都先确保迁移已执行（幂等）。
+_STATE_MIGRATED=
+load_state() {
+  [[ -n ${_STATE_MIGRATED:-} ]] && return 0
+  _STATE_MIGRATED=1
+  migrate_state
+}
+state_get() { load_state; jq -r "$1 // empty" "$STATE"; }
+has_reality() { load_state; [[ $(jq -r '.reality != null' "$STATE") == true ]]; }
+has_hy2() { load_state; [[ $(jq -r '.hy2 != null' "$STATE") == true ]]; }
+has_ss() { load_state; [[ $(jq -r '.ss != null' "$STATE") == true ]]; }
 
 detect_env() {
   [[ $(uname -s) == Linux ]] || err '仅支持 Linux。'
@@ -217,10 +282,24 @@ render_config() {
   local input=$1 output=$2
   jq -n --slurpfile state "$input" '
     $state[0] as $s |
-    {log:{loglevel:"warning"},inbounds:(
-      (if $s.reality then [{tag:"reality",listen:"0.0.0.0",port:443,protocol:"vless",settings:{users:[{id:$s.reality.uuid,flow:"xtls-rprx-vision"}],decryption:"none"},streamSettings:{network:"tcp",security:"reality",realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
-      + (if $s.hy2 then [{tag:"hy2",listen:"0.0.0.0",port:443,protocol:"hysteria",settings:{version:2,users:[{auth:$s.hy2.password}]},streamSettings:{network:"hysteria",security:"tls",hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
-      + (if $s.ss then [{tag:"ss",listen:"0.0.0.0",port:$s.ss.port,protocol:"shadowsocks",settings:{method:"2022-blake3-aes-128-gcm",password:$s.ss.password,network:"tcp,udp"}}] else [] end)
+    {log:{loglevel:"warning"},
+     api:{tag:"api",services:["StatsService"]},
+     stats:{},
+     policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}},
+     routing:{rules:[{type:"field",inboundTag:["api"],outboundTag:"api"}]},
+     inbounds:(
+      (if $s.reality then [{tag:"reality",listen:"0.0.0.0",port:$s.reality.port,protocol:"vless",
+        settings:{users:[$s.reality.users[] | {id:.uuid,flow:"xtls-rprx-vision",email:("reality:"+.uuid)}],decryption:"none"},
+        streamSettings:{network:"tcp",security:"reality",
+          realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
+      + (if $s.hy2 then [{tag:"hy2",listen:"0.0.0.0",port:$s.hy2.port,protocol:"hysteria",
+        settings:{version:2,users:[{auth:$s.hy2.password,email:"hy2"}]},
+        streamSettings:{network:"hysteria",security:"tls",
+          hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},
+          tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
+      + (if $s.ss then [{tag:"ss",listen:"0.0.0.0",port:$s.ss.port,protocol:"shadowsocks",
+        settings:{method:"2022-blake3-aes-128-gcm",password:$s.ss.password,network:"tcp,udp"}}] else [] end)
+      + [{tag:"api",listen:"127.0.0.1",port:10085,protocol:"dokodemo-door",settings:{address:"127.0.0.1"}}]
     ),outbounds:[{protocol:"freedom",tag:"direct"}]}
   ' > "$output"
 }
@@ -254,20 +333,59 @@ valid_domain() {
   [[ $1 =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]] && ((${#1} <= 253))
 }
 ask_domain() {
-  local current input
-  current=$(state_get '.domain')
-  if [[ -n $current ]]; then
-    read -r -p "域名/SNI（必须与现有 $current 相同）：" input
-    input=${input,,}
-    [[ $input == "$current" ]] || err '当前 Reality/HY2 共用一个域名。'
+  local proto=$1 other_domain input prompt label
+  if [[ $proto == reality ]]; then label='Reality'; else label='HY2'; fi
+  if [[ $proto == reality ]]; then other_domain=$(state_get '.hy2.domain')
+  else other_domain=$(state_get '.reality.domain'); fi
+  if [[ -n $other_domain ]]; then
+    prompt="请输入 $label 的域名/SNI（回车沿用 $other_domain）："
   else
-    read -r -p '请输入自己的域名/SNI（如 a.example.com）：' input
-    input=${input,,}
-    valid_domain "$input" || err '域名格式不正确。'
+    prompt="请输入 $label 的域名/SNI（如 a.example.com）："
   fi
+  read -r -p "$prompt" input
+  input=${input:-$other_domain}
+  input=${input,,}
+  valid_domain "$input" || err '域名格式不正确。'
   DOMAIN=$input
 }
-cert_dir() { printf '%s/%s' "$CERT_ROOT" "${1%%.*}"; }
+
+ask_port() {
+  local _var=$1 proto=$2 default=$3 prompt=$4 input
+  read -r -p "$prompt（默认 $default）：" input
+  input=${input:-$default}
+  [[ $input =~ ^[0-9]+$ ]] || err '端口无效。'
+  (( input >= 1 && input <= 65535 )) || err '端口无效。'
+  check_port_free "$proto" "$input"
+  printf -v "$_var" '%s' "$input"
+}
+
+# Reality 端口询问：TCP 443 若被本站点 Nginx 占用，允许接管（Nginx 443 块会自动让位，
+# Web 界面改走 Reality 回落，继续可用）。
+ask_reality_port() {
+  local input
+  read -r -p 'Reality TCP 端口（默认 443）：' input
+  input=${input:-443}
+  [[ $input =~ ^[0-9]+$ ]] || err '端口无效。'
+  (( input >= 1 && input <= 65535 )) || err '端口无效。'
+  (( input != 8443 && input != 80 )) || err '8443/80 为保留端口，请换一个。'
+  if (( input == 443 )) && [[ -f $NGINX_CONF ]] && grep -qE 'listen[[:space:]]+443' "$NGINX_CONF"; then
+    say '提示：TCP 443 当前由本站点 Nginx 提供 Web 服务，安装后将交由 Reality 接管（Web 界面改走 Reality 回落，继续可用）。'
+  else
+    check_port_free tcp "$input"
+  fi
+  RPORT=$input
+}
+
+cert_dir() { printf '%s/%s' "$CERT_ROOT" "$1"; }
+
+# 某个域名的证书验证方式：优先读该域名目录下的 method，回退旧版全局文件。
+cert_method() {
+  local f
+  f=$(cert_dir "$1")/method
+  if [[ -f $f ]]; then cat "$f"
+  elif [[ -f $ROOT/cert-method ]]; then cat "$ROOT/cert-method"
+  fi
+}
 check_port_free() {
   local proto=$1 port=$2
   if [[ $proto == tcp ]]; then
@@ -276,14 +394,13 @@ check_port_free() {
     [[ -z $(ss -H -lun "sport = :$port" 2>/dev/null) ]] || err "UDP $port 已被占用。"
   fi
 }
-preflight_domain_ports() {
-  if ! has_reality; then
-    if ! has_hy2; then check_port_free tcp 443; fi
-    if [[ -z $(state_get '.domain') ]]; then check_port_free tcp 8443; fi
+preflight_web() {
+  # 安装首个 Web 协议（Reality/HY2）前的通用检查
+  if ! has_reality && ! has_hy2; then
+    check_port_free tcp 8443   # Reality 回落内部端口，保留
+    [[ -x $OPENLIST_DIR/openlist ]] || check_port_free tcp 5244
   fi
-  [[ -x $OPENLIST_DIR/openlist ]] || check_port_free tcp 5244
 }
-preflight_hy2_port() { has_hy2 || check_port_free udp 443; }
 
 install_acme() {
   if [[ ! -x $ACME ]]; then
@@ -295,33 +412,19 @@ install_acme() {
   fi
   "$ACME" --set-default-ca --server letsencrypt
 }
-issue_cert() {
-  local domain=$1 dir owner mode token zone ipv6_http=
-  dir=$(cert_dir "$domain")
-  owner=$dir/domain.txt
-  if [[ -f $owner && $(cat "$owner") != "$domain" ]]; then
-    err "证书目录 $dir 已属于 $(cat "$owner")，域名前缀冲突。"
+# 确保 $1 域名在 TCP 80 上有可用的 HTTP 验证站点（acme.sh webroot 模式用）。
+# 已有配置覆盖该域名时直接复用，否则追加临时站点（随 EXIT trap 自动清理）。
+ensure_http_challenge() {
+  local domain=$1 ipv6_http= esc
+  esc=${domain//./\\.}
+  install -d -m 755 "$ACME_WEBROOT/.well-known/acme-challenge"
+  if { [[ -f $NGINX_CONF ]] && grep -qE "server_name[^;]*$esc([ ;]|$)" "$NGINX_CONF"; } \
+    || { [[ -f $ACME_TMP_CONF ]] && grep -qE "server_name[^;]*$esc([ ;]|$)" "$ACME_TMP_CONF"; }; then
+    return 0
   fi
-  if [[ -d $dir && ! -f $owner && -n $(find "$dir" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
-    err "证书目录 $dir 已有非本脚本管理的文件，停止以避免覆盖。"
-  fi
-  install -d -m 700 "$dir"
-  printf '%s\n' "$domain" > "$owner"
-  chmod 600 "$owner"
-  if [[ -f $dir/fullchain.pem && -f $dir/privkey.pem ]] && openssl x509 -checkend 604800 -noout -in "$dir/fullchain.pem" >/dev/null 2>&1; then
-    say '现有证书仍有效，继续使用。'; return
-  fi
-  install_acme
-  say '证书验证方式：1) TCP 80  2) Cloudflare DNS API'
-  read -r -p '请选择 [1/2]：' mode
-  case "$mode" in
-    1)
-      CERT_METHOD=http
-      install -d -m 755 "$ACME_WEBROOT/.well-known/acme-challenge"
-      if [[ ! -f $NGINX_CONF ]]; then
-        if ! svc_active nginx; then check_port_free tcp 80; fi
-        if [[ -s /proc/net/if_inet6 ]]; then ipv6_http='listen [::]:80;'; fi
-        cat > "$ACME_TMP_CONF" <<EOF
+  if ! svc_active nginx; then check_port_free tcp 80; fi
+  if [[ -s /proc/net/if_inet6 ]]; then ipv6_http='listen [::]:80;'; fi
+  cat >> "$ACME_TMP_CONF" <<EOF
 server {
     listen 80;
     $ipv6_http
@@ -330,9 +433,45 @@ server {
     location / { return 404; }
 }
 EOF
-        nginx -t || err 'Nginx HTTP 验证站点配置失败。'
-        restart_or_start nginx || err 'Nginx 无法启动 HTTP 验证站点。'
-      fi
+  nginx -t || err 'Nginx HTTP 验证站点配置失败。'
+  restart_or_start nginx || err 'Nginx 无法启动 HTTP 验证站点。'
+}
+issue_cert() {
+  local domain=$1 dir owner mode token zone ipv6_http= method_file old_dir
+  dir=$(cert_dir "$domain")
+  owner=$dir/domain.txt
+  method_file=$dir/method
+  # 迁移旧版“域名首段”命名的证书目录
+  old_dir=$(printf '%s/%s' "$CERT_ROOT" "${domain%%.*}")
+  if [[ $old_dir != "$dir" && ! -d $dir && -d $old_dir && -f $old_dir/domain.txt && $(cat "$old_dir/domain.txt") == "$domain" ]]; then
+    mv "$old_dir" "$dir"
+    say "已迁移旧证书目录 $old_dir → $dir"
+  fi
+  if [[ -f $owner && $(cat "$owner") != "$domain" ]]; then
+    err "证书目录 $dir 已属于 $(cat "$owner")，域名冲突。"
+  fi
+  if [[ -d $dir && ! -f $owner && -n $(find "$dir" -mindepth 1 -maxdepth 1 -print -quit) ]]; then
+    err "证书目录 $dir 已有非本脚本管理的文件，停止以避免覆盖。"
+  fi
+  install -d -m 700 "$dir"
+  printf '%s\n' "$domain" > "$owner"
+  chmod 600 "$owner"
+  # 迁移旧版全局验证方式记录
+  if [[ ! -f $method_file && -f $ROOT/cert-method ]]; then
+    cp -a "$ROOT/cert-method" "$method_file"
+  fi
+  if [[ -f $dir/fullchain.pem && -f $dir/privkey.pem ]] && openssl x509 -checkend 604800 -noout -in "$dir/fullchain.pem" >/dev/null 2>&1; then
+    say '现有证书仍有效，继续使用。'
+    if [[ ! -f $method_file ]]; then printf 'http\n' > "$method_file"; chmod 600 "$method_file"; fi
+    return
+  fi
+  install_acme
+  say '证书验证方式：1) TCP 80  2) Cloudflare DNS API'
+  read -r -p '请选择 [1/2]：' mode
+  case "$mode" in
+    1)
+      CERT_METHOD=http
+      ensure_http_challenge "$domain"
       if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
         err 'HTTP 80 证书申请失败，请确认 DNS 指向本机且 TCP 80 已放行。'
       fi
@@ -349,8 +488,8 @@ EOF
       ;;
     *) err '请选择 1 或 2。' ;;
   esac
-  printf '%s\n' "$CERT_METHOD" > "$ROOT/cert-method"
-  chmod 600 "$ROOT/cert-method"
+  printf '%s\n' "$CERT_METHOD" > "$method_file"
+  chmod 600 "$method_file"
   "$ACME" --install-cert -d "$domain" --ecc \
     --key-file "$dir/privkey.pem" \
     --fullchain-file "$dir/fullchain.pem" \
@@ -440,39 +579,30 @@ install_openlist() {
   say "OpenList 管理员：admin  密码：$pass"
 }
 
-write_nginx() {
-  local state_file=$1 domain dir reality public_listen= backup= ipv6_http= ipv6_https=
-  domain=$(jq -r '.domain' "$state_file")
-  [[ -n $domain ]] || return
-  dir=$(cert_dir "$domain")
-  reality=$(jq -r '.reality != null' "$state_file")
-  if [[ -s /proc/net/if_inet6 ]]; then
-    ipv6_http='listen [::]:80;'
-    ipv6_https='listen [::]:443 ssl;'
-  fi
-  [[ $reality == true ]] || public_listen=$'listen 443 ssl;\n    '"$ipv6_https"
-  install -d -m 755 /etc/nginx/conf.d
-  if [[ -f $NGINX_CONF ]]; then backup=$TMP_DIR/nginx-old; cp -a "$NGINX_CONF" "$backup"; fi
-  touch "$TMP_DIR/nginx-staged"
-  rm -f -- "$ACME_TMP_CONF"
-  : > "$NGINX_CONF"
-  if [[ -f $ROOT/cert-method && $(cat "$ROOT/cert-method") == http ]]; then
-    cat >> "$NGINX_CONF" <<EOF
-# Managed by xray-manager. Custom changes will be overwritten.
-server {
-    listen 80;
-    $ipv6_http
-    server_name $domain;
-    location ^~ /.well-known/acme-challenge/ { root $ACME_WEBROOT; }
-    location / { return 301 https://\$host\$request_uri; }
+# 安装/卸载协议后，把 OpenList 的 site_url 同步为当前 Web 域名（优先 Reality 的）。
+sync_openlist_siteurl() {
+  local wd cfg cur tmp
+  wd=$(web_domain); [[ -n $wd ]] || return 0
+  cfg=$OPENLIST_DIR/data/config.json
+  [[ -f $cfg ]] || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  cur=$(jq -r '.site_url // empty' "$cfg" 2>/dev/null)
+  [[ $cur == "https://$wd" ]] && return 0
+  tmp=$(mktemp)
+  jq --arg u "https://$wd" '.site_url = $u' "$cfg" > "$tmp" || { rm -f "$tmp"; return 0; }
+  install -m 600 "$tmp" "$cfg"
+  rm -f "$tmp"
+  if svc_active openlist-manager; then svc restart openlist-manager >/dev/null 2>&1 || true; fi
+  say "OpenList 访问域名已同步为 https://$wd"
 }
-EOF
-  fi
+
+# 追加一个 HTTPS server 块（$1=listen 行，可多行；$2=server_name；$3=证书目录）
+nginx_server_block() {
+  local listens=$1 name=$2 dir=$3
   cat >> "$NGINX_CONF" <<EOF
 server {
-    listen 127.0.0.1:8443 ssl;
-    $public_listen
-    server_name $domain;
+$listens
+    server_name $name;
     ssl_certificate $dir/fullchain.pem;
     ssl_certificate_key $dir/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
@@ -487,6 +617,55 @@ server {
     }
 }
 EOF
+}
+
+write_nginx() {
+  local state_file=$1 r_domain r_port h_domain web_domain
+  r_domain=$(jq -r '.reality.domain // empty' "$state_file")
+  r_port=$(jq -r '.reality.port // 443' "$state_file")
+  h_domain=$(jq -r '.hy2.domain // empty' "$state_file")
+  web_domain=${r_domain:-$h_domain}
+  local backup= ipv6_http= ipv6_https= d dir
+  if [[ -s /proc/net/if_inet6 ]]; then
+    ipv6_http='listen [::]:80;'
+    ipv6_https='listen [::]:443 ssl;'
+  fi
+  install -d -m 755 /etc/nginx/conf.d
+  if [[ -f $NGINX_CONF ]]; then backup=$TMP_DIR/nginx-old; cp -a "$NGINX_CONF" "$backup"; fi
+  touch "$TMP_DIR/nginx-staged"
+  rm -f -- "$ACME_TMP_CONF"
+  if [[ -z $web_domain ]]; then
+    # 已无 Web 协议，清理本站点配置
+    rm -f -- "$NGINX_CONF"
+    if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1 && svc_active nginx; then
+      svc reload nginx >/dev/null 2>&1 || true
+    fi
+    return 0
+  fi
+  : > "$NGINX_CONF"
+  # 每个 http 验证方式的域名都需要 80 验证块（证书续期用）
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    [[ $(cert_method "$d") == http ]] || continue
+    cat >> "$NGINX_CONF" <<EOF
+# Managed by xray-manager. Custom changes will be overwritten.
+server {
+    listen 80;
+    $ipv6_http
+    server_name $d;
+    location ^~ /.well-known/acme-challenge/ { root $ACME_WEBROOT; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+EOF
+  done < <(jq -r '[.reality.domain, .hy2.domain] | map(select(. != null)) | unique | .[]' "$state_file")
+  # Reality 回落块（xray reality 的 target，固定 127.0.0.1:8443）
+  if [[ -n $r_domain ]]; then
+    nginx_server_block '    listen 127.0.0.1:8443 ssl;' "$r_domain" "$(cert_dir "$r_domain")"
+  fi
+  # 公网 443 Web 块：Reality 未占用 443/tcp 时提供
+  if [[ -z $r_domain || $r_port != 443 ]]; then
+    nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$web_domain" "$(cert_dir "$web_domain")"
+  fi
   if ! nginx -t || ! restart_or_start nginx; then
     if [[ -n $backup ]]; then cp -a "$backup" "$NGINX_CONF"; else rm -f "$NGINX_CONF"; fi
     restart_or_start nginx || true
@@ -498,7 +677,7 @@ EOF
 random_hex() { openssl rand -hex "$1"; }
 public_address() {
   local domain ip
-  domain=$(state_get '.domain')
+  domain=$(web_domain)
   if [[ -n $domain ]]; then printf '%s' "$domain"; return; fi
   ip=$(curl -4 -fsSL --max-time 8 https://api.ipify.org 2>/dev/null || true)
   if [[ -z $ip ]]; then ip=$(curl -6 -fsSL --max-time 8 https://api64.ipify.org 2>/dev/null || true); fi
@@ -521,9 +700,22 @@ install_reality() {
   install_common
   has_reality && err 'Reality 已安装。'
   ensure_web_deps
-  ask_domain; preflight_domain_ports
+  ask_domain reality
+  ask_reality_port
+  preflight_web
+  say ''
+  say '即将安装：'
+  say '  协议：Reality (VLESS + TCP)'
+  say "  域名/SNI：$DOMAIN"
+  say "  TCP 端口：$RPORT"
+  confirm_go '确认开始安装' || return 1
+  step 1 5 '申请证书'
   issue_cert "$DOMAIN"
+  open_firewall_port tcp 80
+  open_firewall_port tcp "$RPORT"
+  step 2 5 '部署 OpenList'
   install_openlist "$DOMAIN"
+  step 3 5 '生成 Reality 密钥与配置'
   local keypair private public sid uuid
   keypair=$($XRAY_BIN x25519)
   private=$(awk -F': ' '/Private ?[Kk]ey/{print $2}' <<< "$keypair" | head -n 1)
@@ -531,12 +723,16 @@ install_reality() {
   [[ -n $private && -n $public ]] || err 'Xray 密钥生成失败。'
   uuid=$($XRAY_BIN uuid)
   sid=$(random_hex 8)
-  jq --arg d "$DOMAIN" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
-    '.domain=$d | .reality={uuid:$id,private:$priv,public:$pub,sid:$sid}' "$STATE" > "$TMP_DIR/state-new"
+  jq --arg d "$DOMAIN" --argjson port "$RPORT" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
+    '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,users:[{uuid:$id,remark:"默认"}]}' \
+    "$STATE" > "$TMP_DIR/state-new"
+  step 4 5 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
   "$XRAY_BIN" run -test -config "$TMP_DIR/check-config" || err 'Reality 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
+  sync_openlist_siteurl
+  step 5 5 '完成'
   show_info
 }
 
@@ -544,35 +740,61 @@ install_hy2() {
   install_common
   has_hy2 && err 'HY2 已安装。'
   ensure_web_deps
-  ask_domain; preflight_hy2_port
-  if ! has_reality; then preflight_domain_ports; fi
+  ask_domain hy2
+  ask_port HPORT udp 443 'HY2 UDP 端口'
+  preflight_web
+  say ''
+  say '即将安装：'
+  say '  协议：Hysteria2 (UDP)'
+  say "  域名/SNI：$DOMAIN"
+  say "  UDP 端口：$HPORT"
+  confirm_go '确认开始安装' || return 1
+  step 1 5 '申请证书'
   issue_cert "$DOMAIN"
+  open_firewall_port tcp 80
+  open_firewall_port udp "$HPORT"
+  step 2 5 '部署 OpenList'
   install_openlist "$DOMAIN"
+  step 3 5 '生成 HY2 配置'
   local pass dir
   pass=$(random_hex 18)
   dir=$(cert_dir "$DOMAIN")
-  jq --arg d "$DOMAIN" --arg pass "$pass" --arg cert "$dir/fullchain.pem" --arg key "$dir/privkey.pem" \
-    '.domain=$d | .hy2={password:$pass,cert:$cert,key:$key}' "$STATE" > "$TMP_DIR/state-new"
+  jq --arg d "$DOMAIN" --argjson port "$HPORT" --arg pass "$pass" --arg cert "$dir/fullchain.pem" --arg key "$dir/privkey.pem" \
+    '.hy2={password:$pass,cert:$cert,key:$key,domain:$d,port:$port}' "$STATE" > "$TMP_DIR/state-new"
+  step 4 5 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
   "$XRAY_BIN" run -test -config "$TMP_DIR/check-config" || err 'HY2 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
+  sync_openlist_siteurl
+  step 5 5 '完成'
   show_info
 }
 
 install_ss() {
   install_common
   has_ss && err 'SS 已安装。'
-  local port pass address
-  read -r -p '请输入 SS 端口（1-65535，不能是 443）：' port
+  local port pass address p
+  read -r -p '请输入 SS 端口（1-65535）：' port
   [[ $port =~ ^[0-9]+$ && ${#port} -le 5 ]] || err '端口无效。'
   port=$((10#$port))
-  ((port >= 1 && port <= 65535 && port != 443)) || err '端口无效。'
+  ((port >= 1 && port <= 65535)) || err '端口无效。'
+  for p in 80 443 8443 5244; do (( port != p )) || err "端口 $port 为保留端口，请换一个。"; done
   check_port_free tcp "$port"; check_port_free udp "$port"
   address=$(public_address)
+  say ''
+  say '即将安装：'
+  say '  协议：Shadowsocks 2022'
+  say "  端口：$port (TCP+UDP)"
+  say "  地址：$address"
+  confirm_go '确认开始安装' || return 1
+  step 1 2 '生成配置'
   pass=$(openssl rand 16 | base64 | tr -d '\n')
   jq --argjson port "$port" --arg pass "$pass" --arg address "$address" \
     '.ss={port:$port,password:$pass,address:$address}' "$STATE" > "$TMP_DIR/state-new"
+  step 2 2 '生效配置'
+  open_firewall_port tcp "$port"
+  open_firewall_port udp "$port"
   commit_state "$TMP_DIR/state-new"
   show_info
 }
@@ -584,38 +806,70 @@ show_link() {
   say "$link"
   qrencode -t ANSIUTF8 "$link"
 }
-show_info() {
-  require_root
-  [[ -f $STATE ]] || err '尚未安装。'
-  local domain uuid pub sid pass port address userpass encoded
-  domain=$(state_get '.domain')
-  say "Xray 配置：$XRAY_CONF"
-  if [[ -n $domain ]]; then
-    say "域名/SNI：$domain"
-    if [[ -f $(cert_dir "$domain")/fullchain.pem ]]; then
-      openssl x509 -noout -enddate -in "$(cert_dir "$domain")/fullchain.pem"
-    fi
-  fi
+
+# 生成单个 Reality 用户的分享链接
+reality_link() {
+  local uuid=$1 remark=$2 r_domain r_port pub sid frag
+  r_domain=$(state_get '.reality.domain'); r_port=$(state_get '.reality.port')
+  pub=$(state_get '.reality.public'); sid=$(state_get '.reality.sid')
+  frag="Reality"
+  [[ -z ${remark:-} || $remark == 默认 ]] || frag="Reality-$remark"
+  printf 'vless://%s@%s:%s?encryption=none&security=reality&sni=%s&fp=chrome&pbk=%s&sid=%s&flow=xtls-rprx-vision&type=tcp#%s' \
+    "$uuid" "$r_domain" "$r_port" "$r_domain" "$pub" "$sid" "$frag"
+}
+
+# 输出所有分享链接，每行：标题<TAB>链接
+collect_links() {
+  local h_domain h_port pass uuid remark port address userpass encoded
   if has_reality; then
-    uuid=$(state_get '.reality.uuid'); pub=$(state_get '.reality.public'); sid=$(state_get '.reality.sid')
-    show_link 'Reality' "vless://$uuid@$domain:443?encryption=none&security=reality&sni=$domain&fp=chrome&pbk=$pub&sid=$sid&flow=xtls-rprx-vision&type=tcp#Reality"
+    while IFS=$'\t' read -r uuid remark; do
+      [[ -n $uuid ]] || continue
+      printf '%s\t%s\n' "Reality(${remark:-默认})" "$(reality_link "$uuid" "${remark:-默认}")"
+    done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
   fi
   if has_hy2; then
-    pass=$(state_get '.hy2.password')
-    show_link 'HY2' "hysteria2://$pass@$domain:443?sni=$domain#HY2"
+    h_domain=$(state_get '.hy2.domain'); h_port=$(state_get '.hy2.port'); pass=$(state_get '.hy2.password')
+    printf '%s\t%s\n' 'HY2' "hysteria2://$pass@$h_domain:$h_port?sni=$h_domain#HY2"
   fi
   if has_ss; then
     pass=$(state_get '.ss.password'); port=$(state_get '.ss.port'); address=$(state_get '.ss.address')
     userpass="2022-blake3-aes-128-gcm:$pass"
     encoded=$(printf '%s' "$userpass" | url_base64)
-    show_link 'SS2022' "ss://$encoded@$address:$port#SS2022"
+    printf '%s\t%s\n' 'SS2022' "ss://$encoded@$address:$port#SS2022"
   fi
-  if [[ -n $domain ]]; then
-    say "\nOpenList 地址：https://$domain"
+}
+
+# Web 界面（OpenList）使用的域名：优先 Reality 的
+web_domain() {
+  local r h
+  r=$(state_get '.reality.domain'); h=$(state_get '.hy2.domain')
+  printf '%s' "${r:-$h}"
+}
+
+show_info() {
+  require_root
+  [[ -f $STATE ]] || err '尚未安装。'
+  local d title link wd
+  say "Xray 配置：$XRAY_CONF"
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    say "域名/SNI：$d"
+    if [[ -f $(cert_dir "$d")/fullchain.pem ]]; then
+      openssl x509 -noout -enddate -in "$(cert_dir "$d")/fullchain.pem"
+    fi
+  done < <(jq -r '[.reality.domain, .hy2.domain] | map(select(. != null)) | unique | .[]' "$STATE")
+  while IFS=$'\t' read -r title link; do
+    [[ -n $link ]] || continue
+    show_link "$title" "$link"
+  done < <(collect_links)
+  wd=$(web_domain)
+  if [[ -n $wd ]]; then
+    say "\nOpenList 地址：https://$wd"
     if [[ -f $ROOT/openlist-password ]]; then say "OpenList 管理员：admin  密码：$(cat "$ROOT/openlist-password")"; fi
   fi
   show_status
 }
+
 show_status() {
   require_root
   detect_env
@@ -634,10 +888,238 @@ reload_services() {
 update_core() {
   require_root; detect_env; ensure_deps
   [[ -f $ROOT/core-owned && -f $STATE ]] || err '请先通过本脚本安装一种协议。'
+  local current latest
+  current=$($XRAY_BIN version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+  latest=$(curl -fsSL --retry 2 https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null | jq -r '.tag_name // empty')
+  latest=${latest#v}
+  if [[ -n $current && -n $latest && $current == "$latest" ]]; then
+    say "Xray 已是最新版本 v$current，无需更新。"
+    return 0
+  fi
   install_xray_core
 }
+# 一键体检：检查状态文件、内核、配置、服务、端口、证书、API
+doctor() {
+  require_root; detect_env
+  [[ -f $STATE ]] || err '尚未安装。'
+  load_state
+  local fail=0 d port exp cur
+  t_ok() { say "[OK] $1"; }
+  t_fail() { say "[FAIL] $1"; fail=1; }
+  if jq empty "$STATE" 2>/dev/null; then t_ok '状态文件 JSON 合法'; else t_fail '状态文件 JSON 损坏'; fi
+  if [[ -x $XRAY_BIN ]] && "$XRAY_BIN" version >/dev/null 2>&1; then
+    t_ok "Xray 内核可运行（$("$XRAY_BIN" version 2>/dev/null | sed -n '1p')）"
+  else t_fail 'Xray 内核缺失或无法运行'; fi
+  if [[ -f $XRAY_CONF ]]; then
+    if [[ -x $XRAY_BIN ]] && "$XRAY_BIN" run -test -config "$XRAY_CONF" >/dev/null 2>&1; then
+      t_ok 'Xray 配置验证通过'
+    else t_fail 'Xray 配置验证失败'; fi
+  else t_fail 'Xray 配置文件缺失'; fi
+  if svc_active xray-manager; then t_ok 'xray-manager 服务运行中'; else t_fail 'xray-manager 服务未运行'; fi
+  if has_reality || has_hy2; then
+    if svc_active openlist-manager; then t_ok 'openlist-manager 服务运行中'; else t_fail 'openlist-manager 服务未运行'; fi
+    if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
+      t_ok 'Nginx 配置验证通过'
+    else t_fail 'Nginx 配置验证失败'; fi
+    if svc_active nginx; then t_ok 'Nginx 服务运行中'; else t_fail 'Nginx 服务未运行'; fi
+  fi
+  if has_reality; then
+    port=$(state_get '.reality.port')
+    if [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]; then t_ok "Reality TCP $port 监听正常"; else t_fail "Reality TCP $port 未监听"; fi
+  fi
+  if has_hy2; then
+    port=$(state_get '.hy2.port')
+    if [[ -n $(ss -H -lun "sport = :$port" 2>/dev/null) ]]; then t_ok "HY2 UDP $port 监听正常"; else t_fail "HY2 UDP $port 未监听"; fi
+  fi
+  if has_ss; then
+    port=$(state_get '.ss.port')
+    if [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]; then t_ok "SS TCP $port 监听正常"; else t_fail "SS TCP $port 未监听"; fi
+  fi
+  while IFS= read -r d; do
+    [[ -n $d ]] || continue
+    if [[ -f $(cert_dir "$d")/fullchain.pem ]]; then
+      if openssl x509 -checkend 2592000 -noout -in "$(cert_dir "$d")/fullchain.pem" >/dev/null 2>&1; then
+        exp=$(openssl x509 -noout -enddate -in "$(cert_dir "$d")/fullchain.pem" 2>/dev/null | cut -d= -f2)
+        t_ok "证书 $d 有效（到期：$exp）"
+      else t_fail "证书 $d 将在 30 天内过期或已过期"; fi
+    else t_fail "证书 $d 缺失"; fi
+  done < <(jq -r '[.reality.domain, .hy2.domain] | map(select(. != null)) | unique | .[]' "$STATE")
+  if [[ -x $XRAY_BIN ]] && "$XRAY_BIN" api statsquery --server=127.0.0.1:10085 -pattern '>>>none' >/dev/null 2>&1; then
+    t_ok 'Xray API（流量统计接口）可用'
+  else t_fail 'Xray API 不可用（流量统计将无法工作）'; fi
+  if (( fail == 0 )); then say '体检通过：一切正常。'; else err '体检发现问题，请按上面 [FAIL] 项排查。'; fi
+}
+
+# 备份：状态、配置、Nginx 站点、证书、OpenList 数据
+backup() {
+  require_root; detect_env
+  [[ -f $STATE ]] || err '尚未安装。'
+  local dest=${1:-/root/xray-manager-backup-$(date +%Y%m%d-%H%M%S).tar.gz}
+  init_tmp
+  local list=$TMP_DIR/filelist f
+  : > "$list"
+  for f in "$ROOT" "$XRAY_CONF" "$NGINX_CONF" "$CERT_ROOT" \
+      /etc/systemd/system/xray-manager.service /etc/systemd/system/openlist-manager.service \
+      /etc/init.d/xray-manager /etc/init.d/openlist-manager; do
+    [[ -e $f ]] || continue
+    printf '%s\n' "$f" >> "$list"
+  done
+  if [[ -f $ROOT/openlist-owned && -d $OPENLIST_DIR ]]; then printf '%s\n' "$OPENLIST_DIR" >> "$list"; fi
+  tar -czPf "$dest" -T "$list" || err '备份打包失败。'
+  chmod 600 "$dest"
+  say "备份已保存到：$dest"
+  say '注意：备份不含 Xray 内核二进制，恢复后如缺失可用 update 命令重装。'
+}
+
+# 恢复：解包备份并重启服务
+restore() {
+  require_root; detect_env
+  local src=${1:-}
+  [[ -n $src ]] || err '用法：xray-manager restore <备份文件>'
+  [[ -f $src ]] || err "备份文件不存在：$src"
+  local confirm
+  read -r -p '恢复将覆盖现有配置并重启服务，输入 YES 确认：' confirm
+  [[ $confirm == YES ]] || { say '已取消。'; return; }
+  init_tmp
+  tar -tzPf "$src" >/dev/null 2>&1 || err '备份文件损坏或格式不正确。'
+  tar -xzPf "$src" -C / || err '恢复解包失败。'
+  [[ -f $STATE ]] || err '备份中没有状态文件，恢复中止。'
+  install_xray_service
+  if [[ -x $OPENLIST_DIR/openlist ]]; then install_openlist_service; fi
+  if [[ $INIT == systemd ]]; then systemctl daemon-reload; fi
+  if [[ -f $XRAY_CONF ]]; then
+    [[ -x $XRAY_BIN ]] || err 'Xray 内核缺失，请先用 update 命令安装后再恢复。'
+    "$XRAY_BIN" run -test -config "$XRAY_CONF" >/dev/null 2>&1 || err '恢复的 Xray 配置验证失败。'
+  fi
+  if command -v nginx >/dev/null 2>&1 && [[ -f $NGINX_CONF ]]; then
+    nginx -t >/dev/null 2>&1 || err '恢复的 Nginx 配置验证失败。'
+  fi
+  restart_or_start xray-manager || err 'Xray 启动失败。'
+  if [[ -f $NGINX_CONF ]]; then restart_or_start nginx || true; fi
+  if [[ -x $OPENLIST_DIR/openlist ]]; then restart_or_start openlist-manager || true; fi
+  say '恢复完成。'
+}
+
+human_bytes() {
+  local b=${1:-0}
+  (( b < 0 )) && b=0
+  if (( b < 1024 )); then printf '%d B' "$b"
+  elif (( b < 1048576 )); then awk -v b="$b" 'BEGIN{printf "%.2f KB", b/1024}'
+  elif (( b < 1073741824 )); then awk -v b="$b" 'BEGIN{printf "%.2f MB", b/1048576}'
+  else awk -v b="$b" 'BEGIN{printf "%.2f GB", b/1073741824}'; fi
+}
+
+# 流量统计：通过 Xray API 查询各用户/协议的上行下行（Xray 重启后清零）
+traffic() {
+  require_root
+  [[ -f $STATE ]] || err '尚未安装。'
+  [[ -x $XRAY_BIN ]] || err 'Xray 内核缺失。'
+  load_state
+  local out name value email dir uuid remark up down
+  out=$("$XRAY_BIN" api statsquery --server=127.0.0.1:10085 -pattern '>>>' 2>/dev/null) \
+    || err 'Xray API 不可用，请确认 xray-manager 服务运行中。'
+  declare -A TUPS TDOWNS
+  while IFS=$'\t' read -r name value; do
+    [[ $name == user\>\>\>* ]] || [[ $name == inbound\>\>\>* ]] || continue
+    dir=${name##*>>>}
+    [[ $dir == uplink || $dir == downlink ]] || continue
+    email=${name#*>>>}; email=${email%%>>>*}
+    if [[ $dir == uplink ]]; then TUPS[$email]=${value:-0}; else TDOWNS[$email]=${value:-0}; fi
+  done < <(jq -r '.stat[]? | "\(.name)\t\(.value)"' <<< "$out")
+  say '流量统计（自 Xray 启动累计，重启后清零）：'
+  if has_reality; then
+    say 'Reality 用户：'
+    while IFS=$'\t' read -r uuid remark; do
+      [[ -n $uuid ]] || continue
+      email="reality:$uuid"
+      up=${TUPS[$email]:-0}; down=${TDOWNS[$email]:-0}
+      say "  ${remark:-默认}：上行 $(human_bytes "$up") / 下行 $(human_bytes "$down")"
+    done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
+  fi
+  if has_hy2; then
+    up=${TUPS[hy2]:-0}; down=${TDOWNS[hy2]:-0}
+    say "HY2：上行 $(human_bytes "$up") / 下行 $(human_bytes "$down")"
+  fi
+  if has_ss; then
+    up=${TUPS[ss]:-0}; down=${TDOWNS[ss]:-0}
+    say "SS2022：上行 $(human_bytes "$up") / 下行 $(human_bytes "$down")"
+  fi
+}
+
+# Reality 添加用户
+reality_adduser() {
+  require_root; detect_env
+  [[ -f $STATE ]] || err '尚未安装。'
+  load_state
+  has_reality || err 'Reality 尚未安装。'
+  local remark uuid link
+  read -r -p '新用户备注（如 张三手机）：' remark
+  remark=${remark:-新用户}
+  uuid=$($XRAY_BIN uuid)
+  init_tmp
+  jq --arg id "$uuid" --arg remark "$remark" \
+    '.reality.users += [{uuid:$id,remark:$remark}]' "$STATE" > "$TMP_DIR/state-new"
+  commit_state "$TMP_DIR/state-new"
+  say "已添加 Reality 用户：$remark"
+  link=$(reality_link "$uuid" "$remark")
+  show_link "Reality($remark)" "$link"
+}
+
+# Reality 删除用户（至少保留一个）
+reality_deluser() {
+  require_root; detect_env
+  [[ -f $STATE ]] || err '尚未安装。'
+  load_state
+  has_reality || err 'Reality 尚未安装。'
+  local count i uuid remark choice
+  count=$(jq '.reality.users | length' "$STATE")
+  (( count > 1 )) || err '只剩一个用户，不能再删。'
+  say '当前 Reality 用户：'
+  i=0
+  while IFS=$'\t' read -r uuid remark; do
+    i=$((i+1)); say "  $i. ${remark:-默认}（${uuid:0:8}…）"
+  done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
+  read -r -p '输入要删除的用户编号：' choice
+  [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )) || err '编号无效。'
+  init_tmp
+  jq --argjson idx "$((choice-1))" 'del(.reality.users[$idx])' "$STATE" > "$TMP_DIR/state-new"
+  commit_state "$TMP_DIR/state-new"
+  say '已删除。'
+}
+
+# 一键开启 BBR
+enable_bbr() {
+  require_root
+  local cur major minor
+  cur=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+  if [[ $cur == bbr ]]; then say 'BBR 已启用。'; return 0; fi
+  major=$(uname -r | cut -d. -f1); minor=$(uname -r | cut -d. -f2)
+  if (( major < 4 || (major == 4 && minor < 9) )); then
+    err "内核版本 $(uname -r) 过低，BBR 需要 4.9+。"
+  fi
+  modprobe tcp_bbr 2>/dev/null || true
+  cat > /etc/sysctl.d/99-xray-manager-bbr.conf <<EOF
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+  sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+  cur=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+  if [[ $cur == bbr ]]; then say 'BBR 已启用（重启后保持）。'; else err "BBR 启用失败，当前拥塞算法：${cur:-未知}。"; fi
+}
+# 删除单个域名的证书（仅当 domain.txt 凭证匹配时才删，避免误删）
+remove_cert() {
+  local domain=$1 dir owner
+  [[ -n $domain ]] || return 0
+  dir=$(cert_dir "$domain")
+  owner=$dir/domain.txt
+  [[ -f $owner && $(cat "$owner") == "$domain" ]] || return 0
+  [[ ! -x $ACME ]] || "$ACME" --remove -d "$domain" --ecc >/dev/null 2>&1 || true
+  rm -rf -- "$dir"
+}
+# 移除整个 Web 栈：Nginx 站点、OpenList、全部本脚本管理的证书
 remove_web_stack() {
-  local domain=$1 dir
+  local d dom
   if [[ -f $NGINX_CONF ]]; then
     cp -a "$NGINX_CONF" "$TMP_DIR/nginx-remove-old"
     rm -f -- "$NGINX_CONF"
@@ -655,55 +1137,63 @@ remove_web_stack() {
   else
     rm -f -- /etc/init.d/openlist-manager
   fi
-  if [[ -n $domain ]]; then
-    dir=$(cert_dir "$domain")
-    if [[ -f $dir/domain.txt && $(cat "$dir/domain.txt") == "$domain" ]]; then
-      [[ ! -x $ACME ]] || "$ACME" --remove -d "$domain" --ecc >/dev/null 2>&1 || true
-      rm -rf -- "$dir"
-    fi
+  if [[ -d $CERT_ROOT ]]; then
+    for d in "$CERT_ROOT"/*; do
+      [[ -d $d && -f $d/domain.txt ]] || continue
+      dom=$(cat "$d/domain.txt")
+      remove_cert "$dom"
+    done
   fi
   if [[ -f $ROOT/openlist-owned ]]; then rm -rf -- "$OPENLIST_DIR"; fi
   rm -f -- "$ROOT/cert-method" "$ROOT/openlist-password" "$ROOT/openlist-owned" "$ACME_TMP_CONF"
   rm -rf -- "$ACME_WEBROOT"
 }
 uninstall_protocol() {
-  local protocol=$1 label=$2 confirm domain remaining
+  local protocol=$1 label=$2 confirm pdomain
   require_root; detect_env
   [[ -f $STATE ]] || err '没有本脚本管理的安装。'
   command -v jq >/dev/null 2>&1 || err '缺少 jq，无法安全修改配置。'
+  load_state
   [[ $(jq -r --arg p "$protocol" '.[$p] != null' "$STATE") == true ]] || err "$label 尚未安装。"
   read -r -p "只卸载 $label；输入 $label 确认：" confirm
   [[ $confirm == "$label" ]] || { say '已取消。'; return; }
   init_tmp
-  domain=$(state_get '.domain')
-  jq --arg p "$protocol" '.[$p] = null | if .reality == null and .hy2 == null then .domain = "" else . end' \
-    "$STATE" > "$TMP_DIR/state-new"
-  remaining=$(jq -r '[.reality,.hy2,.ss] | any(. != null)' "$TMP_DIR/state-new")
-  if [[ $remaining == true ]]; then
+  pdomain=$(jq -r --arg p "$protocol" '.[$p].domain // empty' "$STATE")
+  jq --arg p "$protocol" '.[$p] = null' "$STATE" > "$TMP_DIR/state-new"
+  if [[ $(jq -r '[.reality,.hy2,.ss] | any(. != null)' "$TMP_DIR/state-new") == true ]]; then
+    # 先让 Xray 释放端口，再更新 Nginx（Reality 占 443 时 Nginx 要接回 443）
     commit_state "$TMP_DIR/state-new"
-    if [[ $protocol == reality && $(jq -r '.hy2 != null' "$STATE") == true ]]; then
+    if [[ $protocol == reality || $protocol == hy2 ]]; then
       if ! write_nginx "$STATE"; then
-        cp -a "$TMP_DIR/state-old" "$TMP_DIR/state-rollback"
-        commit_state "$TMP_DIR/state-rollback" || true
-        err 'Reality 卸载后的 Nginx 切换失败，已尝试恢复原配置。'
+        install -m 600 "$TMP_DIR/state-old" "$STATE"
+        if [[ -f $TMP_DIR/config-old ]]; then install -m 600 "$TMP_DIR/config-old" "$XRAY_CONF"; fi
+        restart_or_start xray-manager || true
+        err 'Nginx 配置更新失败，已恢复原有 Xray 配置。'
       fi
+      # 该域名若无其他协议使用，删除其证书
+      if [[ -n $pdomain ]] && [[ $(jq -r --arg d "$pdomain" \
+          '[.reality.domain,.hy2.domain] | map(select(. != null)) | any(. == $d)' "$STATE") != true ]]; then
+        remove_cert "$pdomain"
+      fi
+      sync_openlist_siteurl
     fi
+    say "$label 已卸载；其他协议配置保留。"
   else
     svc stop xray-manager || err 'Xray 停止失败，原配置未修改。'
     svc disable xray-manager >/dev/null 2>&1 || true
     install -m 600 "$TMP_DIR/state-new" "$STATE"
     rm -f -- "$XRAY_CONF"
+    remove_web_stack
+    say "$label 已卸载；已无剩余协议，Web 服务已一并清理。"
   fi
-  if [[ -n $domain && $(jq -r '.domain' "$STATE") == '' ]]; then remove_web_stack "$domain"; fi
-  say "$label 已卸载；其他协议配置保留。"
 }
 uninstall_all() {
   require_root; detect_env
   [[ -f $STATE ]] || err '没有本脚本管理的安装。'
-  local confirm domain dir
+  local confirm
   read -r -p '将删除 Xray、OpenList、证书、配置和账号数据。输入 DELETE 确认：' confirm
   [[ $confirm == DELETE ]] || { say '已取消。'; return; }
-  domain=$(state_get '.domain')
+  init_tmp
   for service in xray-manager openlist-manager; do
     svc stop "$service" >/dev/null 2>&1 || true
     svc disable "$service" >/dev/null 2>&1 || true
@@ -714,15 +1204,9 @@ uninstall_all() {
   else
     rm -f /etc/init.d/xray-manager /etc/init.d/openlist-manager
   fi
-  if [[ -n $domain ]]; then
-    if [[ -x $ACME ]]; then "$ACME" --remove -d "$domain" --ecc >/dev/null 2>&1 || true; fi
-    dir=$(cert_dir "$domain")
-    if [[ -f $dir/domain.txt && $(cat "$dir/domain.txt") == "$domain" ]]; then rm -rf -- "$dir"; fi
-  fi
-  rm -f -- "$NGINX_CONF" "$ACME_TMP_CONF" "$XRAY_CONF" "$XRAY_BIN" "$SELF"
-  rm -rf -- "$ACME_WEBROOT"
+  remove_web_stack
+  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF"
   rm -f -- "$XRAY_ASSETS/geoip.dat" "$XRAY_ASSETS/geosite.dat"
-  if [[ -f $ROOT/openlist-owned ]]; then rm -rf -- "$OPENLIST_DIR"; fi
   rm -rf -- "$ROOT"
   if command -v nginx >/dev/null 2>&1 && svc_active nginx; then nginx -t && svc reload nginx || true; fi
   say '卸载完成。系统 Nginx 包与 acme.sh 程序仍保留。'
@@ -742,14 +1226,55 @@ uninstall_menu() {
 EOF
     read -r -p '请选择：' choice
     case "$choice" in
-      1) uninstall_all ;;
-      2) uninstall_protocol reality Reality ;;
-      3) uninstall_protocol hy2 HY2 ;;
-      4) uninstall_protocol ss SS2022 ;;
+      1) guarded uninstall_all ;;
+      2) guarded uninstall_protocol reality Reality ;;
+      3) guarded uninstall_protocol hy2 HY2 ;;
+      4) guarded uninstall_protocol ss SS2022 ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
   done
+}
+
+tools_menu() {
+  local choice src
+  while true; do
+    cat <<'EOF'
+
+===== 更多工具 =====
+1. 更新 Xray 内核和地理数据
+2. 一键开启 BBR
+3. Reality 添加用户
+4. Reality 删除用户
+5. 查看流量统计
+6. 一键体检
+7. 备份配置
+8. 恢复配置
+9. 重载服务
+0. 返回上级
+EOF
+    read -r -p '请选择：' choice
+    case "$choice" in
+      1) guarded update_core ;;
+      2) guarded enable_bbr ;;
+      3) guarded reality_adduser ;;
+      4) guarded reality_deluser ;;
+      5) traffic ;;
+      6) doctor ;;
+      7) guarded backup ;;
+      8) read -r -p '请输入备份文件路径：' src
+         [[ -n $src ]] || { say '已取消。'; continue; }
+         guarded restore "$src" ;;
+      9) guarded reload_services ;;
+      0) return ;;
+      *) say '无效选项。' ;;
+    esac
+  done
+}
+
+# 带并发锁与日志的执行包装：失败时回到菜单，不退出整个脚本
+guarded() {
+  ( take_lock; setup_logging; "$@" ) || true
 }
 
 menu() {
@@ -758,21 +1283,21 @@ menu() {
     cat <<'EOF'
 
 ===== 个人 Xray 管理 =====
-1. 一键安装 Reality (TCP 443)
-2. 一键安装 HY2 (UDP 443)
-3. 一键安装 SS2022 (自选端口)
-4. 更新 Xray 内核和地理数据
-5. 查看当前配置、分享链接和服务状态
+1. 一键安装 Reality
+2. 一键安装 HY2
+3. 一键安装 SS2022
+4. 查看配置、分享链接和服务状态
+5. 更多工具
 6. 卸载管理
 0. 退出
 EOF
     read -r -p '请选择：' choice
     case "$choice" in
-      1) install_reality ;;
-      2) install_hy2 ;;
-      3) install_ss ;;
-      4) update_core ;;
-      5) show_info ;;
+      1) guarded install_reality ;;
+      2) guarded install_hy2 ;;
+      3) guarded install_ss ;;
+      4) show_info ;;
+      5) tools_menu ;;
       6) uninstall_menu ;;
       0) return ;;
       *) say '无效选项。' ;;
@@ -781,7 +1306,18 @@ EOF
 }
 
 main() {
-  case ${1:-menu} in
+  local cmd=${1:-menu}
+  case $cmd in
+    menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|\
+doctor|backup|restore|traffic|adduser|deluser|bbr) ;;
+    *) say '用法：xray-manager [menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload|doctor|backup|restore|traffic|adduser|deluser|bbr]'; exit 2 ;;
+  esac
+  require_root; detect_env
+  case $cmd in
+    menu|info|status|traffic|doctor) ;;
+    *) take_lock; setup_logging ;;
+  esac
+  case $cmd in
     menu) menu ;;
     reality) install_reality ;;
     hy2) install_hy2 ;;
@@ -794,7 +1330,13 @@ main() {
     uninstall-hy2) uninstall_protocol hy2 HY2 ;;
     uninstall-ss) uninstall_protocol ss SS2022 ;;
     reload) reload_services ;;
-    *) say '用法：xray-manager [menu|reality|hy2|ss|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|reload]'; exit 2 ;;
+    doctor) doctor ;;
+    backup) backup "${2:-}" ;;
+    restore) restore "${2:-}" ;;
+    traffic) traffic ;;
+    adduser) reality_adduser ;;
+    deluser) reality_deluser ;;
+    bbr) enable_bbr ;;
   esac
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
