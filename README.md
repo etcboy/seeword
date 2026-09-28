@@ -9,10 +9,10 @@
 - 以 root 身份运行；支持 Debian/Ubuntu、RHEL/Fedora/CentOS 8+、Alpine，服务管理支持 systemd 和 OpenRC。实际可用架构取决于上游当期是否发布对应的 Xray/OpenList 二进制，以及发行版是否提供 Nginx、qrencode 等依赖。脚本会在下载前检查。
 - Cloudflare DNS 验证需要具有该域名 DNS 编辑权限的 API Token。Token 只在交互时读取，acme.sh 会保存续期所需凭据，请保护 `/root/.acme.sh`。
 
-一键安装（整行复制到服务器终端）：
+一键安装（整行复制到服务器终端；脚本会自动安装到 `/usr/local/bin/xray-manager` 并启动菜单）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh -o xray-manager.sh && { if [ "$(id -u)" -eq 0 ]; then bash xray-manager.sh; else sudo bash xray-manager.sh; fi; }
+curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
 ```
 
 如果已经下载脚本，也可以运行：
