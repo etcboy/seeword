@@ -1236,8 +1236,10 @@ reality_adduser() {
   [[ -f $STATE ]] || err '尚未安装。'
   load_state
   has_reality || err 'Reality 尚未安装。'
-  local remark uuid link
-  read -r -p '新用户备注（如 张三手机）：' remark
+  local remark=${1:-} uuid link
+  if [[ -z $remark ]]; then
+    read -r -p '新用户备注（如 张三手机）：' remark
+  fi
   remark=${remark:-新用户}
   uuid=$($XRAY_BIN uuid)
   init_tmp
@@ -1255,15 +1257,17 @@ reality_deluser() {
   [[ -f $STATE ]] || err '尚未安装。'
   load_state
   has_reality || err 'Reality 尚未安装。'
-  local count i uuid remark choice
+  local count i uuid remark choice=${1:-}
   count=$(jq '.reality.users | length' "$STATE")
   (( count > 1 )) || err '只剩一个用户，不能再删。'
-  say '当前 Reality 用户：'
-  i=0
-  while IFS=$'\t' read -r uuid remark; do
-    i=$((i+1)); say "  $i. ${remark:-默认}（${uuid:0:8}…）"
-  done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
-  read -r -p '输入要删除的用户编号：' choice
+  if [[ -z $choice ]]; then
+    say '当前 Reality 用户：'
+    i=0
+    while IFS=$'\t' read -r uuid remark; do
+      i=$((i+1)); say "  $i. ${remark:-默认}（${uuid:0:8}…）"
+    done < <(jq -r '.reality.users[] | [.uuid, (.remark // "")] | @tsv' "$STATE")
+    read -r -p '输入要删除的用户编号：' choice
+  fi
   [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )) || err '编号无效。'
   init_tmp
   jq --argjson idx "$((choice-1))" 'del(.reality.users[$idx])' "$STATE" > "$TMP_DIR/state-new"
@@ -1526,8 +1530,8 @@ doctor|backup|restore|traffic|adduser|deluser|bbr|deps|fixenv) ;;
     backup) backup "${2:-}" ;;
     restore) restore "${2:-}" ;;
     traffic) traffic ;;
-    adduser) reality_adduser ;;
-    deluser) reality_deluser ;;
+    adduser) reality_adduser "${2:-}" ;;
+    deluser) reality_deluser "${2:-}" ;;
     bbr) enable_bbr ;;
     deps) cmd_deps ;;
     fixenv) fixenv ;;

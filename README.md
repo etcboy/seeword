@@ -66,8 +66,8 @@ sudo seeword status               # 查看服务状态
 sudo seeword update               # 更新 Xray 内核与地理数据（已是最新则跳过）
 sudo seeword doctor               # 一键体检
 sudo seeword traffic              # 流量统计（Xray 启动后累计，重启后清零）
-sudo seeword adduser              # Reality 添加用户
-sudo seeword deluser              # Reality 删除用户
+sudo seeword adduser [备注]        # Reality 添加用户；直接给备注则一步完成并显示链接和二维码
+sudo seeword deluser [编号]        # Reality 删除用户；直接给编号则一步完成
 sudo seeword backup [输出路径]     # 备份配置
 sudo seeword restore <备份文件>    # 恢复配置
 sudo seeword bbr                  # 一键开启 BBR
