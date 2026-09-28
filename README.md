@@ -4,14 +4,22 @@
 
 ## 快速开始
 
+常规系统（有 curl）：
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
+```
+
+极精简系统（无 curl，用 wget）：
+
+```bash
+wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
 ```
 
 - 需要 root 权限；安装完成后自动进入菜单。
 - 主程序位于 `/usr/local/bin/seeword`，之后运行 `sudo seeword` 即可打开菜单。
 - 也支持子命令直达，例如 `sudo seeword reality`。
-- 极精简系统如果没有 curl，可用 wget：`wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash`。装好后若依赖缺失，运行 `sudo seeword fixenv` 修复环境，再运行 `sudo seeword deps` 安装全部依赖。
+- 装好后若依赖缺失，运行 `sudo seeword fixenv` 修复环境，再运行 `sudo seeword deps` 安装全部依赖。
 
 ## 安装前准备
 
