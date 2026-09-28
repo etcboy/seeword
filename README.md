@@ -12,7 +12,7 @@
 一键安装（整行复制到服务器终端）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh -o xray-manager.sh && sudo bash xray-manager.sh
+curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh -o xray-manager.sh && { if [ "$(id -u)" -eq 0 ]; then bash xray-manager.sh; else sudo bash xray-manager.sh; fi; }
 ```
 
 如果已经下载脚本，也可以运行：
