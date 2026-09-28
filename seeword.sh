@@ -1238,7 +1238,7 @@ reality_adduser() {
   has_reality || err 'Reality 尚未安装。'
   local remark=${1:-} uuid link
   if [[ -z $remark ]]; then
-    read -r -p '新用户备注（如 张三手机）：' remark
+    read -r -p '请输入用户名（如 dd）：' remark
   fi
   remark=${remark:-新用户}
   uuid=$($XRAY_BIN uuid)
@@ -1294,7 +1294,7 @@ reality_deluser() {
   (( count > 1 )) || err '只剩一个用户，不能再删。'
   if [[ -z $choice ]]; then
     _list_reality_users
-    read -r -p '输入要删除的用户编号或备注：' choice
+    read -r -p '请输入要删除的用户名（或编号）：' choice
   fi
   idx=$(resolve_user_index "$choice") || err '未找到该用户（编号或备注无效）。'
   remark=$(jq -r --argjson idx "$idx" '.reality.users[$idx].remark // "默认"' "$STATE")
@@ -1453,6 +1453,28 @@ EOF
   done
 }
 
+# 用户管理子菜单（Reality）
+user_menu() {
+  local choice
+  while true; do
+    cat <<'EOF'
+
+===== 用户管理（Reality） =====
+1. 查看用户
+2. 添加用户
+3. 删除用户
+0. 返回上级
+EOF
+    read -r -p '请选择：' choice
+    case "$choice" in
+      1) reality_users ;;
+      2) guarded reality_adduser ;;
+      3) guarded reality_deluser ;;
+      0) return ;;
+      *) say '无效选项。' ;;
+    esac
+  done
+}
 tools_menu() {
   local choice src
   while true; do
@@ -1461,34 +1483,30 @@ tools_menu() {
 ===== 更多工具 =====
 1. 更新 Xray 内核和地理数据
 2. 一键开启 BBR
-3. Reality 添加用户
-4. Reality 删除用户
-5. 查看 Reality 用户
-6. 查看流量统计
-7. 一键体检
-8. 备份配置
-9. 恢复配置
-10. 重载服务
-11. 安装全部依赖
-12. 修复系统环境（软件源/DNS/网络）
+3. Reality 用户管理
+4. 查看流量统计
+5. 一键体检
+6. 备份配置
+7. 恢复配置
+8. 重载服务
+9. 安装全部依赖
+10. 修复系统环境（软件源/DNS/网络）
 0. 返回上级
 EOF
     read -r -p '请选择：' choice
     case "$choice" in
       1) guarded update_core ;;
       2) guarded enable_bbr ;;
-      3) guarded reality_adduser ;;
-      4) guarded reality_deluser ;;
-      5) reality_users ;;
-      6) traffic ;;
-      7) doctor ;;
-      8) guarded backup ;;
-      9) read -r -p '请输入备份文件路径：' src
+      3) user_menu ;;
+      4) traffic ;;
+      5) doctor ;;
+      6) guarded backup ;;
+      7) read -r -p '请输入备份文件路径：' src
          [[ -n $src ]] || { say '已取消。'; continue; }
          guarded restore "$src" ;;
-      10) guarded reload_services ;;
-      11) guarded cmd_deps ;;
-      12) guarded fixenv ;;
+      8) guarded reload_services ;;
+      9) guarded cmd_deps ;;
+      10) guarded fixenv ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac

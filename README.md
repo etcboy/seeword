@@ -50,7 +50,7 @@ wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
 | 4. 安装 OpenList    | SNI 伪装站，可选；安装后 Nginx 自动反代到 OpenList，否则展示 Nginx 默认页面。 |
 | 5. 查看配置与状态   | 分享链接、二维码、OpenList 登录信息、服务状态。                       |
-| 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理（添加/删除/查看）、流量统计、一键体检、备份/恢复、重载服务。 |
+| 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理子菜单（查看/添加/删除）、流量统计、一键体检、备份/恢复、重载服务。 |
 | 7. 卸载管理         | 二级菜单：彻底全卸载，或单独卸载 Reality / HY2 / SS2022 / OpenList。   |
 
 ### 常用子命令
