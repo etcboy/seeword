@@ -13,7 +13,8 @@ ACME_TMP_CONF=/etc/nginx/conf.d/xray-manager-acme.conf
 ACME_WEBROOT=/var/www/xray-manager
 CERT_ROOT=/etc/nginx/zs
 ACME=/root/.acme.sh/acme.sh
-SELF=/usr/local/bin/xray-manager
+SELF=/usr/local/bin/seeword
+LEGACY_SELF=/usr/local/bin/xray-manager
 TMP_DIR=
 INIT=
 PKG=
@@ -701,6 +702,8 @@ install_common() {
   ensure_deps
   state_init; init_tmp
   if [[ ! -f $SELF ]] || ! cmp -s "${BASH_SOURCE[0]}" "$SELF"; then install -m 755 "${BASH_SOURCE[0]}" "$SELF"; fi
+  # 旧命令迁移：删掉上一版安装的 /usr/local/bin/xray-manager
+  [[ $SELF == "$LEGACY_SELF" || ! -e $LEGACY_SELF ]] || rm -f -- "$LEGACY_SELF"
   if [[ ! -f $ROOT/core-owned ]]; then install_xray_core; touch "$ROOT/core-owned"; fi
 }
 
@@ -1217,7 +1220,7 @@ uninstall_all() {
   pkg_remove nginx
   # 删除 acme.sh 程序及其管理的全部证书记录
   rm -rf -- /root/.acme.sh
-  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF"
+  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF" "$LEGACY_SELF"
   rm -f -- "$XRAY_ASSETS/geoip.dat" "$XRAY_ASSETS/geosite.dat"
   rm -rf -- "$ROOT"
   rm -f -- "$LOG_FILE"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# xray-manager 一键安装器：下载主脚本到 /usr/local/bin/xray-manager 并启动。
+# seeword 一键安装器：下载主脚本到 /usr/local/bin/seeword 并启动。
 #
 # 用法：
 #   curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
@@ -7,7 +7,8 @@ set -Eeuo pipefail
 umask 077
 
 SRC=${XRAY_MANAGER_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/seeword}
-TARGET=${XRAY_MANAGER_TARGET:-/usr/local/bin/xray-manager}
+TARGET=${XRAY_MANAGER_TARGET:-/usr/local/bin/seeword}
+LEGACY_TARGET=/usr/local/bin/xray-manager
 
 SUDO=
 if [[ $EUID -ne 0 ]]; then
@@ -18,9 +19,14 @@ fi
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 curl -fsSL --retry 3 "$SRC" -o "$tmp"
-grep -q 'xray-manager' "$tmp" || { echo '下载内容异常，中止安装。' >&2; exit 1; }
+grep -q 'seeword' "$tmp" || { echo '下载内容异常，中止安装。' >&2; exit 1; }
 bash -n "$tmp" || { echo '下载的脚本语法校验失败，中止安装。' >&2; exit 1; }
 $SUDO install -m 755 "$tmp" "$TARGET"
+# 旧命令迁移：删掉上一版安装的 /usr/local/bin/xray-manager
+if [[ $TARGET != "$LEGACY_TARGET" && -e $LEGACY_TARGET ]]; then
+  $SUDO rm -f "$LEGACY_TARGET"
+  echo "已删除旧命令 $LEGACY_TARGET。"
+fi
 echo "已安装到 $TARGET，正在启动…"
 # 管道安装时 stdin 是 curl 的数据流，尝试把菜单接到终端以便交互
 if { : </dev/tty; } 2>/dev/null; then

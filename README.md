@@ -9,8 +9,8 @@ curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sud
 ```
 
 - 需要 root 权限；安装完成后自动进入菜单。
-- 主程序位于 `/usr/local/bin/xray-manager`，之后运行 `sudo xray-manager` 即可打开菜单。
-- 也支持子命令直达，例如 `sudo xray-manager reality`。
+- 主程序位于 `/usr/local/bin/seeword`，之后运行 `sudo seeword` 即可打开菜单。
+- 也支持子命令直达，例如 `sudo seeword reality`。
 
 ## 安装前准备
 
@@ -45,25 +45,25 @@ curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sud
 ### 常用子命令
 
 ```bash
-sudo xray-manager menu                 # 打开菜单
-sudo xray-manager reality              # 一键安装 Reality
-sudo xray-manager hy2                  # 一键安装 HY2
-sudo xray-manager ss                   # 一键安装 SS2022
-sudo xray-manager info                 # 查看配置、分享链接与状态
-sudo xray-manager status               # 查看服务状态
-sudo xray-manager update               # 更新 Xray 内核与地理数据（已是最新则跳过）
-sudo xray-manager doctor               # 一键体检
-sudo xray-manager traffic              # 流量统计（Xray 启动后累计，重启后清零）
-sudo xray-manager adduser              # Reality 添加用户
-sudo xray-manager deluser              # Reality 删除用户
-sudo xray-manager backup [输出路径]     # 备份配置
-sudo xray-manager restore <备份文件>    # 恢复配置
-sudo xray-manager bbr                  # 一键开启 BBR
-sudo xray-manager reload               # 重载服务
-sudo xray-manager uninstall            # 一键全卸载
-sudo xray-manager uninstall-reality    # 只卸载 Reality
-sudo xray-manager uninstall-hy2        # 只卸载 HY2
-sudo xray-manager uninstall-ss         # 只卸载 SS2022
+sudo seeword menu                 # 打开菜单
+sudo seeword reality              # 一键安装 Reality
+sudo seeword hy2                  # 一键安装 HY2
+sudo seeword ss                   # 一键安装 SS2022
+sudo seeword info                 # 查看配置、分享链接与状态
+sudo seeword status               # 查看服务状态
+sudo seeword update               # 更新 Xray 内核与地理数据（已是最新则跳过）
+sudo seeword doctor               # 一键体检
+sudo seeword traffic              # 流量统计（Xray 启动后累计，重启后清零）
+sudo seeword adduser              # Reality 添加用户
+sudo seeword deluser              # Reality 删除用户
+sudo seeword backup [输出路径]     # 备份配置
+sudo seeword restore <备份文件>    # 恢复配置
+sudo seeword bbr                  # 一键开启 BBR
+sudo seeword reload               # 重载服务
+sudo seeword uninstall            # 一键全卸载
+sudo seeword uninstall-reality    # 只卸载 Reality
+sudo seeword uninstall-hy2        # 只卸载 HY2
+sudo seeword uninstall-ss         # 只卸载 SS2022
 ```
 
 卸载是分级的：单独卸载某协议会保留其他协议；当某域名不再被任何协议使用时清理其证书；没有剩余协议时清理 Web 栈。只有“一键全卸载”是彻底清除：删除 Xray、Nginx（含软件包与配置）、OpenList、acme.sh、全部证书、配置、账号数据与运行日志，服务器上不再保留本脚本的任何痕迹。
