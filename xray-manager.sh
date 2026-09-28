@@ -218,8 +218,8 @@ render_config() {
   jq -n --slurpfile state "$input" '
     $state[0] as $s |
     {log:{loglevel:"warning"},inbounds:(
-      (if $s.reality then [{tag:"reality",listen:"0.0.0.0",port:443,protocol:"vless",settings:{users:[{id:$s.reality.uuid,flow:"xtls-rprx-vision"}],decryption:"none"},streamSettings:{method:"raw",security:"reality",realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
-      + (if $s.hy2 then [{tag:"hy2",listen:"0.0.0.0",port:443,protocol:"hysteria",settings:{version:2,users:[{auth:$s.hy2.password}]},streamSettings:{method:"hysteria",security:"tls",hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
+      (if $s.reality then [{tag:"reality",listen:"0.0.0.0",port:443,protocol:"vless",settings:{users:[{id:$s.reality.uuid,flow:"xtls-rprx-vision"}],decryption:"none"},streamSettings:{network:"tcp",security:"reality",realitySettings:{target:"127.0.0.1:8443",serverNames:[$s.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
+      + (if $s.hy2 then [{tag:"hy2",listen:"0.0.0.0",port:443,protocol:"hysteria",settings:{version:2,users:[{auth:$s.hy2.password}]},streamSettings:{network:"hysteria",security:"tls",hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
       + (if $s.ss then [{tag:"ss",listen:"0.0.0.0",port:$s.ss.port,protocol:"shadowsocks",settings:{method:"2022-blake3-aes-128-gcm",password:$s.ss.password,network:"tcp,udp"}}] else [] end)
     ),outbounds:[{protocol:"freedom",tag:"direct"}]}
   ' > "$output"
@@ -526,8 +526,8 @@ install_reality() {
   install_openlist "$DOMAIN"
   local keypair private public sid uuid
   keypair=$($XRAY_BIN x25519)
-  private=$(awk -F': ' '/Private key:|PrivateKey:/{print $2}' <<< "$keypair" | head -n 1)
-  public=$(awk -F': ' '/Public key:|Password:|PublicKey:/{print $2}' <<< "$keypair" | head -n 1)
+  private=$(awk -F': ' '/Private ?[Kk]ey/{print $2}' <<< "$keypair" | head -n 1)
+  public=$(awk -F': ' '/Public ?[Kk]ey/{print $2}' <<< "$keypair" | head -n 1)
   [[ -n $private && -n $public ]] || err 'Xray 密钥生成失败。'
   uuid=$($XRAY_BIN uuid)
   sid=$(random_hex 8)
