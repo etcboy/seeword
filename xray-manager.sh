@@ -728,6 +728,30 @@ uninstall_all() {
   say '卸载完成。系统 Nginx 包与 acme.sh 程序仍保留。'
 }
 
+uninstall_menu() {
+  local choice
+  while true; do
+    cat <<'EOF'
+
+===== 卸载管理 =====
+1. 一键全卸载
+2. 只卸载 Reality
+3. 只卸载 HY2
+4. 只卸载 SS2022
+0. 返回上级
+EOF
+    read -r -p '请选择：' choice
+    case "$choice" in
+      1) uninstall_all ;;
+      2) uninstall_protocol reality Reality ;;
+      3) uninstall_protocol hy2 HY2 ;;
+      4) uninstall_protocol ss SS2022 ;;
+      0) return ;;
+      *) say '无效选项。' ;;
+    esac
+  done
+}
+
 menu() {
   local choice
   while true; do
@@ -739,10 +763,7 @@ menu() {
 3. 一键安装 SS2022 (自选端口)
 4. 更新 Xray 内核和地理数据
 5. 查看当前配置、分享链接和服务状态
-6. 一键卸载
-7. 只卸载 Reality
-8. 只卸载 HY2
-9. 只卸载 SS2022
+6. 卸载管理
 0. 退出
 EOF
     read -r -p '请选择：' choice
@@ -752,10 +773,7 @@ EOF
       3) install_ss ;;
       4) update_core ;;
       5) show_info ;;
-      6) uninstall_all ;;
-      7) uninstall_protocol reality Reality ;;
-      8) uninstall_protocol hy2 HY2 ;;
-      9) uninstall_protocol ss SS2022 ;;
+      6) uninstall_menu ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
