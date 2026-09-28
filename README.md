@@ -15,19 +15,6 @@
 curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
 ```
 
-如果已经下载脚本，也可以运行：
-
-```bash
-sudo bash xray-manager.sh
-```
-
-分步下载和执行：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/xray-manager.sh -o xray-manager.sh
-sudo bash xray-manager.sh
-```
-
 安装时脚本会复制自身到 `/usr/local/bin/xray-manager`，之后可直接运行 `sudo xray-manager`。也可使用 `reality`、`hy2`、`ss`、`update`、`info`、`status`、`uninstall`、`uninstall-reality`、`uninstall-hy2`、`uninstall-ss`、`reload` 子命令。
 
 ## 菜单
