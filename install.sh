@@ -30,7 +30,9 @@ fi
 grep -q 'seeword' "$tmp" || { echo '下载内容异常，中止安装。' >&2; exit 1; }
 bash -n "$tmp" || { echo '下载的脚本语法校验失败，中止安装。' >&2; exit 1; }
 $SUDO install -m 755 "$tmp" "$TARGET"
-echo "已安装到 $TARGET，正在启动…"
+# 创建 sw 快捷方式
+$SUDO ln -sf "$TARGET" /usr/local/bin/sw
+echo "已安装到 $TARGET（快捷命令：sw），正在启动…"
 # 管道安装时 stdin 是 curl 的数据流，尝试把菜单接到终端以便交互
 if { : </dev/tty; } 2>/dev/null; then
   exec $SUDO "$TARGET" "$@" </dev/tty

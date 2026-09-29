@@ -986,6 +986,8 @@ install_common() {
   ensure_deps
   state_init; init_tmp
   if [[ ! -f $SELF ]] || ! cmp -s "${BASH_SOURCE[0]}" "$SELF"; then install -m 755 "${BASH_SOURCE[0]}" "$SELF"; fi
+  # 确保 sw 快捷方式存在
+  [[ -L /usr/local/bin/sw ]] || ln -sf "$SELF" /usr/local/bin/sw 2>/dev/null || true
   if [[ ! -f $ROOT/core-owned ]]; then install_xray_core; touch "$ROOT/core-owned"; fi
 }
 
@@ -1562,7 +1564,7 @@ uninstall_all() {
   pkg_remove nginx
   # 删除 acme.sh 程序及其管理的全部证书记录
   rm -rf -- /root/.acme.sh
-  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF"
+  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF" /usr/local/bin/sw
   rm -f -- "$XRAY_ASSETS/geoip.dat" "$XRAY_ASSETS/geosite.dat"
   rm -rf -- "$ROOT"
   rm -f -- "$LOG_FILE"
