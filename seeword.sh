@@ -1355,7 +1355,7 @@ update_core() {
   require_root; detect_env; ensure_deps
   [[ -f $ROOT/core-owned && -f $STATE ]] || err '请先通过本脚本安装一种协议。'
   local current latest
-  current=$($XRAY_BIN version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1)
+  current=$($XRAY_BIN version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true)
   latest=$(curl -fsSL --retry 2 https://api.github.com/repos/XTLS/Xray-core/releases/latest 2>/dev/null | jq -r '.tag_name // empty')
   latest=${latest#v}
   if [[ -n $current && -n $latest && $current == "$latest" ]]; then
