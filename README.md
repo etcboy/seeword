@@ -26,7 +26,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 | 事项   | 说明                                                                                                  |
 | ------ | ----------------------------------------------------------------------------------------------------- |
-| 域名   | 自有域名，DNS A/AAAA 指向服务器；Reality 与 HY2 可共用也可分开。Cloudflare 托管请用“仅 DNS”，不要开启代理。NAT/纯 IPv6 服务器：域名做 AAAA 解析到本机 IPv6 即可，输入域名后脚本会自动检查解析并区分 v4/v6。 |
+| 域名   | HY2 必须用自有域名（DNS A/AAAA 指向服务器，v2rayN 不支持跳过证书校验）；Reality 可选大厂域名伪装（默认 www.icloud.com，无需自有域名和证书）或自有域名。Reality 与 HY2 可共用也可分开。Cloudflare 托管请用“仅 DNS”，不要开启代理。NAT/纯 IPv6 服务器：域名做 AAAA 解析到本机 IPv6 即可，输入域名后脚本会自动检查解析并区分 v4/v6。 |
 | 端口   | Reality TCP（默认 443）、HY2 UDP（默认 443）、SS 自选 TCP/UDP；HTTP 证书验证需要 TCP 80（含 IPv6）。脚本会自动尝试放行（ufw / firewalld / iptables+ip6tables）。 |
 | 系统   | Debian/Ubuntu、RHEL/Fedora/CentOS 8+、Alpine；服务管理支持 systemd 与 OpenRC。                          |
 | 依赖   | Nginx、qrencode 等由系统包安装；Xray/OpenList 从官方 release 下载并校验 `.dgst`。可用架构以官方发布为准，下载前会检查。 |
@@ -36,7 +36,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 - 多协议共存：Reality、HY2、SS2022 可按需组合安装。
 - Reality 支持多用户：`adduser` / `deluser` / `users` 增删查用户。
-- 443 端口智能处理：Reality 占用 TCP 443 时，本机 Nginx 的 443 站点自动让位；未通过 Reality 认证的 HTTPS 请求回落到 Nginx，展示默认页面（已安装 OpenList 则反代到 OpenList）。
+- 443 端口智能处理：Reality 占用 TCP 443 时，本机 Nginx 的 443 站点自动让位；未通过 Reality 认证的 HTTPS 请求：自有域名模式回落到 Nginx 展示默认页面（已安装 OpenList 则反代到 OpenList）；大厂域名伪装模式直接回落到真实站点（如 www.icloud.com），无需本地 Nginx。
 - OpenList 独立安装：不再随 Reality/HY2 自动安装；如需用它做 SNI 伪装站，在主菜单单独安装，可随时独立卸载。
 - 证书按完整域名独立存放，每个域名独立记录验证方式（HTTP/DNS），acme.sh 自动续期。
 - 工具箱：一键体检、流量统计、备份/恢复、BBR、重载服务、内核更新。
@@ -46,7 +46,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 | 选项 | 说明                                                                 |
 | ---- | -------------------------------------------------------------------- |
-| 1. 一键安装 Reality | 输入域名/SNI 与 TCP 端口（默认 443），优先 TCP 80 验证申请 Let's Encrypt 证书；80 被占用时自动改用 Cloudflare DNS API。 |
+| 1. 一键安装 Reality | 选择 SNI 伪装方式：①大厂域名（推荐，默认 www.icloud.com，无需证书，回落直连真实站点）；②自有域名（需 DNS 指向本机，优先 TCP 80 验证申请 Let's Encrypt 证书，80 被占用时改用 Cloudflare DNS API）。 |
 | 2. 一键安装 HY2     | 输入域名与 UDP 端口（默认 443）。                                     |
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
 | 4. 安装 OpenList    | SNI 伪装站，可选；安装后 Nginx 自动反代到 OpenList，否则展示 Nginx 默认页面。 |
