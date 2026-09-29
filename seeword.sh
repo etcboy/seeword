@@ -48,29 +48,34 @@ setup_logging() {
 }
 
 open_firewall_port() {
-  local proto=$1 port=$2
+  local proto=$1 port=$2 ok=0
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
-    ufw allow "$port/$proto" >/dev/null 2>&1 || true
-    return 0
+    if ufw allow "$port/$proto" >/dev/null 2>&1; then ok=1; fi
+    return $((1 - ok))
   fi
   if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-    firewall-cmd --permanent --add-port="$port/$proto" >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
-    return 0
+    if firewall-cmd --permanent --add-port="$port/$proto" >/dev/null 2>&1; then
+      firewall-cmd --reload >/dev/null 2>&1 || true
+      ok=1
+    fi
+    return $((1 - ok))
   fi
   if command -v iptables >/dev/null 2>&1; then
-    iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
-      iptables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
+    if iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
+      iptables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1; then ok=1; fi
   fi
   # IPv6 同样放行（ufw/firewalld 已自动处理双栈，这里补裸 iptables 的情况）
   if command -v ip6tables >/dev/null 2>&1; then
-    ip6tables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
-      ip6tables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || true
+    if ip6tables -C INPUT -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1 || \
+      ip6tables -I INPUT 1 -p "$proto" --dport "$port" -j ACCEPT >/dev/null 2>&1; then ok=1; fi
   fi
+  return $((1 - ok))
 }
 
 say() { printf '%s\n' "$*"; }
 err() { printf '错误：%s\n' "$*" >&2; exit 1; }
+# 输出敏感信息（分享链接、密码）时绕过日志文件，直接写到终端
+say_secret() { printf '%s\n' "$*" > /dev/tty 2>/dev/null || printf '%s\n' "$*"; }
 # 系统是否有 IPv6 协议栈（注意：/proc 文件 ls 显示大小为 0，不能用 -s 判断，必须读内容）
 has_ipv6() { grep -q . /proc/net/if_inet6 2>/dev/null; }
 cleanup() {
@@ -178,7 +183,7 @@ cmd_deps() {
 }
 # 极精简系统 apt 源缺失时，写入 Debian/Ubuntu 官方源（先备份原文件）
 fix_apt_sources() {
-  if grep -rqE --include='*.list' '^[[:space:]]*deb([[:space:]]|$)' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
+  if grep -rqE --include='*.list' --include='*.sources' '^[[:space:]]*(deb([[:space:]]|$)|Types:.*deb)' /etc/apt/sources.list /etc/apt/sources.list.d 2>/dev/null; then
     say '检测到有效的 apt 源。'
   else
     say '未检测到有效的 apt 源。'
@@ -398,7 +403,7 @@ render_config() {
     {log:{loglevel:"warning"},
      api:{tag:"api",services:["StatsService"]},
      stats:{},
-     policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}}},
+     policy:{levels:{"0":{statsUserUplink:true,statsUserDownlink:true}},system:{statsInboundUplink:true,statsInboundDownlink:true}},
      routing:{rules:[{type:"field",inboundTag:["api"],outboundTag:"api"}]},
      inbounds:(
       (if $s.reality then [{tag:"reality",listen:$listen,port:$s.reality.port,protocol:"vless",
@@ -746,7 +751,7 @@ install_openlist() {
       printf '%s\n' "$pass" > "$ROOT/openlist-password"
       chmod 600 "$ROOT/openlist-password"
     fi
-    say "OpenList 管理员：admin  密码：$(cat "$ROOT/openlist-password")"
+    say_secret "OpenList 管理员：admin  密码：$(cat "$ROOT/openlist-password")"
     return
   fi
   [[ ! -e $OPENLIST_DIR ]] || err "$OPENLIST_DIR 已存在，避免覆盖。"
@@ -778,7 +783,7 @@ install_openlist() {
   printf '%s\n' "$pass" > "$ROOT/openlist-password"
   chmod 600 "$ROOT/openlist-password"
   touch "$ROOT/openlist-owned"
-  say "OpenList 管理员：admin  密码：$pass"
+  say_secret "OpenList 管理员：admin  密码：$pass"
 }
 
 # 安装/卸载协议后，把 OpenList 的 site_url 同步为当前 Web 域名（优先 Reality 的）。
@@ -814,7 +819,7 @@ purge_openlist() {
 install_openlist_standalone() {
   require_root; detect_env
   ensure_deps
-  init_tmp
+  state_init; init_tmp
   local domain= has_web=0
   if [[ -f $STATE ]]; then
     domain=$(web_domain 2>/dev/null || true)
@@ -1098,9 +1103,9 @@ install_ss() {
 url_base64() { base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='; }
 show_link() {
   local title=$1 link=$2
-  say "\n$title 分享链接："
-  say "$link"
-  qrencode -t ANSIUTF8 "$link"
+  say_secret "\n$title 分享链接："
+  say_secret "$link"
+  qrencode -t ANSIUTF8 "$link" > /dev/tty 2>/dev/null || qrencode -t ANSIUTF8 "$link"
 }
 
 # 分享链接用的连接地址：优先公网 IPv4，没有可用 V4 时才用 IPv6（加方括号），都不行回退域名
@@ -1184,7 +1189,7 @@ show_info() {
   wd=$(web_domain)
   if [[ -n $wd ]]; then
     say "\nOpenList 地址：https://$wd"
-    if [[ -f $ROOT/openlist-password ]]; then say "OpenList 管理员：admin  密码：$(cat "$ROOT/openlist-password")"; fi
+    if [[ -f $ROOT/openlist-password ]]; then say_secret "OpenList 管理员：admin  密码：$(cat "$ROOT/openlist-password")"; fi
   fi
   show_status
 }
@@ -1307,8 +1312,44 @@ restore() {
   read -r -p '恢复将覆盖现有配置并重启服务，输入 YES 确认：' confirm
   [[ $confirm == YES ]] || { say '已取消。'; return; }
   init_tmp
+  local extract_dir=$TMP_DIR/restore
+  install -d -m 700 "$extract_dir"
   tar -tzPf "$src" >/dev/null 2>&1 || err '备份文件损坏或格式不正确。'
-  tar -xzPf "$src" -C / || err '恢复解包失败。'
+  # 白名单校验：只允许备份包包含本脚本管理的路径
+  local allowed_paths=(
+    "$ROOT" "$XRAY_CONF" "$NGINX_CONF" "$CERT_ROOT"
+    /etc/systemd/system/seeword.service /etc/systemd/system/openlist.service
+    /etc/init.d/seeword /etc/init.d/openlist
+    "$OPENLIST_DIR"
+  )
+  local entry allowed=0 ap
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    # 拒绝相对路径、.. 和非绝对路径
+    [[ $entry == /* ]] || err "备份包含非法路径（非绝对路径）：$entry"
+    [[ $entry != *".."* ]] || err "备份包含非法路径：$entry"
+    allowed=0
+    for ap in "${allowed_paths[@]}"; do
+      if [[ $entry == "$ap" || $entry == "$ap"/* ]]; then allowed=1; break; fi
+    done
+    (( allowed )) || err "备份包含未授权的路径：$entry，已中止恢复。"
+  done < <(tar -tzPf "$src" 2>/dev/null)
+  tar -xzPf "$src" -C "$extract_dir" || err '恢复解包失败。'
+  # 校验通过后复制到系统路径
+  local src_path dest_path
+  while IFS= read -r entry; do
+    [[ -n $entry ]] || continue
+    src_path="$extract_dir$entry"
+    dest_path="$entry"
+    [[ -e $src_path ]] || continue
+    if [[ -d $src_path ]]; then
+      install -d -m 700 "$(dirname "$dest_path")"
+      cp -a "$src_path" "$dest_path"
+    else
+      install -d -m 755 "$(dirname "$dest_path")"
+      cp -a "$src_path" "$dest_path"
+    fi
+  done < <(tar -tzPf "$src" 2>/dev/null)
   [[ -f $STATE ]] || err '备份中没有状态文件，恢复中止。'
   install_xray_service
   if [[ -x $OPENLIST_DIR/openlist ]]; then install_openlist_service; fi
@@ -1651,12 +1692,18 @@ cmd_open_ports() {
   (( ${#ports[@]} > 0 )) || { say '没有有效端口，已取消。'; return 0; }
   if [[ $proto == all ]]; then protos=(tcp udp); else protos=("$proto"); fi
   say "正在放行 ${#ports[@]} 个端口（${protos[*]}）…"
+  local failed=()
   for p in "${ports[@]}"; do
     for pr in "${protos[@]}"; do
-      open_firewall_port "$pr" "$p"
+      open_firewall_port "$pr" "$p" || failed+=("$p/$pr")
     done
   done
-  say '端口放行完成。'
+  if (( ${#failed[@]} > 0 )); then
+    say "警告：以下端口放行失败（本机无可用防火墙工具或命令失败）：${failed[*]}"
+    say '请手动检查防火墙，或确认云服务商安全组已放行。'
+  else
+    say '端口放行完成。'
+  fi
 }
 tools_menu() {
   local choice src
