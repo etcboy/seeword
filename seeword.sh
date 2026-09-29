@@ -684,7 +684,7 @@ issue_cert() {
 
 install_openlist_service() {
   if [[ $INIT == systemd ]]; then
-    cat > /etc/systemd/system/openlist-manager.service <<EOF
+    cat > /etc/systemd/system/openlist.service <<EOF
 [Unit]
 Description=Personal OpenList service
 After=network-online.target
@@ -701,20 +701,20 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable openlist-manager >/dev/null
+    systemctl enable openlist >/dev/null
   else
-    cat > /etc/init.d/openlist-manager <<EOF
+    cat > /etc/init.d/openlist <<EOF
 #!/sbin/openrc-run
 name="Personal OpenList"
 directory="$OPENLIST_DIR"
 command="$OPENLIST_DIR/openlist"
 command_args="server"
 command_background=true
-pidfile="/run/openlist-manager.pid"
+pidfile="/run/openlist.pid"
 depend() { need net; }
 EOF
-    chmod 755 /etc/init.d/openlist-manager
-    rc-update add openlist-manager default >/dev/null
+    chmod 755 /etc/init.d/openlist
+    rc-update add openlist default >/dev/null
   fi
 }
 install_openlist() {
@@ -723,7 +723,7 @@ install_openlist() {
   if [[ -x $OPENLIST_DIR/openlist ]]; then
     [[ -f $ROOT/openlist-owned ]] || err "$OPENLIST_DIR 已存在非本脚本安装的 OpenList。"
     install_openlist_service
-    if ! svc_active openlist-manager; then svc start openlist-manager || err 'OpenList 无法重新启动。'; fi
+    if ! svc_active openlist; then svc start openlist || err 'OpenList 无法重新启动。'; fi
     if [[ ! -f $ROOT/openlist-password ]]; then
       pass=$(openssl rand -hex 18)
       (cd "$OPENLIST_DIR" && ./openlist admin set "$pass") || err '无法恢复 OpenList 管理员密码。'
@@ -751,7 +751,7 @@ install_openlist() {
     '{force:true,site_url:$url,jwt_secret:$jwt,database:{type:"sqlite3",db_file:"data/data.db"},scheme:{address:"127.0.0.1",http_port:5244,https_port:-1},temp_dir:"data/temp",bleve_dir:"data/bleve"}' > "$config"
   chmod 600 "$config"
   install_openlist_service
-  restart_or_start openlist-manager || err 'OpenList 启动失败。'
+  restart_or_start openlist || err 'OpenList 启动失败。'
   pass=$(openssl rand -hex 18)
   local attempt password_set=0
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -778,18 +778,18 @@ sync_openlist_siteurl() {
   jq --arg u "https://$wd" '.site_url = $u' "$cfg" > "$tmp" || { rm -f "$tmp"; return 0; }
   install -m 600 "$tmp" "$cfg"
   rm -f "$tmp"
-  if svc_active openlist-manager; then svc restart openlist-manager >/dev/null 2>&1 || true; fi
+  if svc_active openlist; then svc restart openlist >/dev/null 2>&1 || true; fi
   say "OpenList 访问域名已同步为 https://$wd"
 }
 # 删除 OpenList 程序、数据与服务（Nginx 站点由调用方按需重写）
 purge_openlist() {
-  svc stop openlist-manager >/dev/null 2>&1 || true
-  svc disable openlist-manager >/dev/null 2>&1 || true
+  svc stop openlist >/dev/null 2>&1 || true
+  svc disable openlist >/dev/null 2>&1 || true
   if [[ $INIT == systemd ]]; then
-    rm -f -- /etc/systemd/system/openlist-manager.service
+    rm -f -- /etc/systemd/system/openlist.service
     systemctl daemon-reload
   else
-    rm -f -- /etc/init.d/openlist-manager
+    rm -f -- /etc/init.d/openlist
   fi
   if [[ -f $ROOT/openlist-owned ]]; then rm -rf -- "$OPENLIST_DIR"; fi
   rm -f -- "$ROOT/openlist-password" "$ROOT/openlist-owned"
@@ -1176,10 +1176,10 @@ show_status() {
   detect_env
   say '\n服务状态：'
   local name
-  for name in seeword openlist-manager nginx; do
+  for name in seeword openlist nginx; do
     case $name in
       seeword) label='seeword' ;;
-      openlist-manager) label='OpenList' ;;
+      openlist) label='OpenList' ;;
       nginx) label='Nginx' ;;
     esac
     if svc_active "$name"; then say "$label：运行中"; else say "$label：未运行"; fi
@@ -1223,7 +1223,7 @@ doctor() {
   else t_fail 'Xray 配置文件缺失'; fi
   if svc_active seeword; then t_ok 'seeword 服务运行中'; else t_fail 'seeword 服务未运行'; fi
   if [[ -x $OPENLIST_DIR/openlist ]]; then
-    if svc_active openlist-manager; then t_ok 'OpenList 服务运行中'; else t_fail 'OpenList 服务未运行'; fi
+    if svc_active openlist; then t_ok 'OpenList 服务运行中'; else t_fail 'OpenList 服务未运行'; fi
   fi
   if has_reality || has_hy2; then
     if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
@@ -1267,8 +1267,8 @@ backup() {
   local list=$TMP_DIR/filelist f
   : > "$list"
   for f in "$ROOT" "$XRAY_CONF" "$NGINX_CONF" "$CERT_ROOT" \
-      /etc/systemd/system/seeword.service /etc/systemd/system/openlist-manager.service \
-      /etc/init.d/seeword /etc/init.d/openlist-manager; do
+      /etc/systemd/system/seeword.service /etc/systemd/system/openlist.service \
+      /etc/init.d/seeword /etc/init.d/openlist; do
     [[ -e $f ]] || continue
     printf '%s\n' "$f" >> "$list"
   done
@@ -1304,7 +1304,7 @@ restore() {
   fi
   restart_or_start seeword || err 'Xray 启动失败。'
   if [[ -f $NGINX_CONF ]]; then restart_or_start nginx || true; fi
-  if [[ -x $OPENLIST_DIR/openlist ]]; then restart_or_start openlist-manager || true; fi
+  if [[ -x $OPENLIST_DIR/openlist ]]; then restart_or_start openlist || true; fi
   say '恢复完成。'
 }
 
@@ -1529,15 +1529,15 @@ uninstall_all() {
   read -r -p '将彻底删除 Xray、Nginx（含软件包与配置）、OpenList、acme.sh、全部证书、配置与账号数据。输入 DELETE 确认：' confirm
   [[ $confirm == DELETE ]] || { say '已取消。'; return; }
   init_tmp
-  for service in seeword openlist-manager nginx; do
+  for service in seeword openlist nginx; do
     svc stop "$service" >/dev/null 2>&1 || true
     svc disable "$service" >/dev/null 2>&1 || true
   done
   if [[ $INIT == systemd ]]; then
-    rm -f /etc/systemd/system/seeword.service /etc/systemd/system/openlist-manager.service
+    rm -f /etc/systemd/system/seeword.service /etc/systemd/system/openlist.service
     systemctl daemon-reload
   else
-    rm -f /etc/init.d/seeword /etc/init.d/openlist-manager
+    rm -f /etc/init.d/seeword /etc/init.d/openlist
   fi
   remove_web_stack
   # OpenList 是独立组件，全卸载时显式清理
