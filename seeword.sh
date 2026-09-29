@@ -75,7 +75,12 @@ open_firewall_port() {
 say() { printf '%s\n' "$*"; }
 err() { printf '错误：%s\n' "$*" >&2; exit 1; }
 # 输出敏感信息（分享链接、密码）时绕过日志文件，直接写到终端
-say_secret() { printf '%s\n' "$*" > /dev/tty 2>/dev/null || printf '%s\n' "$*"; }
+say_secret() {
+  # 优先写 /dev/tty 避开日志；无 TTY 时只告警不打印密钥（防进日志文件）
+  if ! printf '%s\n' "$*" > /dev/tty 2>/dev/null; then
+    say '警告：无法打开终端显示敏感信息，已跳过输出（请在有终端的环境下查看）。' >&2
+  fi
+}
 # 系统是否有 IPv6 协议栈（注意：/proc 文件 ls 显示大小为 0，不能用 -s 判断，必须读内容）
 has_ipv6() { grep -q . /proc/net/if_inet6 2>/dev/null; }
 cleanup() {
@@ -220,14 +225,17 @@ fixenv() {
   require_root; detect_env
   say '== 检查外网连通性 =='
   # 双栈检测：IPv4 和 IPv6 任一通即可（纯 IPv6 服务器无 IPv4 路由）
-  if timeout 8 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
-     timeout 8 bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
+  # timeout 可能不存在（极简系统），用 command -v 检查后决定是否加超时
+  local _to=
+  command -v timeout >/dev/null 2>&1 && _to='timeout 8'
+  if $_to bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
+     $_to bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
     say '外网连通正常。'
   else
     err '无法连接外网（1.1.1.1:443 / [2606:4700:4700::1111]:443），请先检查服务器网络后再试。'
   fi
   say '== 检查 DNS 解析 =='
-  if timeout 8 bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
+  if $_to bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
     say 'DNS 解析正常。'
   elif [[ -L /etc/resolv.conf ]]; then
     err 'DNS 解析失败，且 /etc/resolv.conf 由其他程序管理，请手动检查 DNS 配置。'
@@ -235,7 +243,7 @@ fixenv() {
     say 'DNS 解析失败，尝试写入公共 DNS（IPv4 + IPv6 双栈）。'
     [[ -f /etc/resolv.conf ]] && cp -a /etc/resolv.conf /etc/resolv.conf.bak
     printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\nnameserver 2001:4860:4860::8888\n' > /etc/resolv.conf
-    timeout 8 bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
+    $_to bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
     say 'DNS 已修复（原文件已备份为 /etc/resolv.conf.bak）。'
   fi
   say '== 检查软件源 =='
@@ -393,7 +401,10 @@ render_config() {
   # 双栈监听：有 IPv6 时用 ::（Linux 默认双栈，同时接受 v4/v6），纯 v4 时用 0.0.0.0
   local listen=0.0.0.0
   has_ipv6 && listen='::'
-  jq -n --slurpfile state "$input" --arg listen "$listen" '
+  # OpenList 是否安装：决定 HY2 的 masquerade 目标（未安装时用 404，避免代理到死端口）
+  local has_openlist=false
+  [[ -x $OPENLIST_DIR/openlist ]] && has_openlist=true
+  jq -n --slurpfile state "$input" --arg listen "$listen" --argjson has_openlist "$has_openlist" '
     $state[0] as $s |
     {log:{loglevel:"warning"},
      api:{tag:"api",services:["StatsService"]},
@@ -408,7 +419,7 @@ render_config() {
       + (if $s.hy2 then [{tag:"hy2",listen:$listen,port:$s.hy2.port,protocol:"hysteria",
         settings:{version:2,clients:[{auth:$s.hy2.password,email:"hy2"}]},
         streamSettings:{network:"hysteria",security:"tls",
-          hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:{type:"proxy",url:"http://127.0.0.1:5244"}},
+          hysteriaSettings:{version:2,auth:$s.hy2.password,masquerade:(if $has_openlist then {type:"proxy",url:"http://127.0.0.1:5244"} else {type:"404"} end)},
           tlsSettings:{alpn:["h3"],certificates:[{certificateFile:$s.hy2.cert,keyFile:$s.hy2.key}]}}}] else [] end)
       + (if $s.ss then [{tag:"ss",listen:$listen,port:$s.ss.port,protocol:"shadowsocks",
         settings:{method:"2022-blake3-aes-128-gcm",password:$s.ss.password,network:"tcp,udp"}}] else [] end)
@@ -629,8 +640,8 @@ ensure_http_challenge() {
   local domain=$1 ipv6_http= esc
   esc=${domain//./\\.}
   install -d -m 755 "$ACME_WEBROOT/.well-known/acme-challenge"
-  if { [[ -f $NGINX_CONF ]] && grep -qE "server_name[^;]*$esc([ ;]|$)" "$NGINX_CONF"; } \
-    || { [[ -f $ACME_TMP_CONF ]] && grep -qE "server_name[^;]*$esc([ ;]|$)" "$ACME_TMP_CONF"; }; then
+  if { [[ -f $NGINX_CONF ]] && grep -qE "server_name([^;]*[ \t])?$esc([ ;]|$)" "$NGINX_CONF"; } \
+    || { [[ -f $ACME_TMP_CONF ]] && grep -qE "server_name([^;]*[ \t])?$esc([ ;]|$)" "$ACME_TMP_CONF"; }; then
     return 0
   fi
   if ! svc_active nginx; then check_port_free tcp 80; fi
@@ -875,8 +886,8 @@ install_openlist_standalone() {
   # 自有域名：申请证书并存入 state，供 Nginx 建站用
   if (( own_domain )); then
     issue_cert "$domain"
-    open_firewall_port tcp 80
-    open_firewall_port tcp 443
+    open_firewall_port tcp 80 || say '警告：TCP 80 端口放行失败，请手动检查防火墙。'
+    open_firewall_port tcp 443 || say '警告：TCP 443 端口放行失败，请手动检查防火墙。'
     jq --arg d "$domain" '.openlist={domain:$d}' "$STATE" > "$TMP_DIR/state-new" && commit_state "$TMP_DIR/state-new"
   fi
   install_openlist "$domain"
@@ -886,7 +897,10 @@ install_openlist_standalone() {
     sync_openlist_siteurl
     say 'Nginx 已切换为反代 OpenList。'
   else
+    # 无域名时只能通过 IP:5244 直接访问，需放行防火墙
+    open_firewall_port tcp 5244 || say '警告：TCP 5244 端口放行失败，请手动检查防火墙（OpenList 直接访问需要）。'
     say '当前未安装 Reality/HY2，安装 Web 协议后 Nginx 会自动反代 OpenList。'
+    say '当前可通过 http://服务器IP:5244 直接访问 OpenList。'
   fi
 }
 # 单独卸载 OpenList，站点切回 Nginx 默认页面
@@ -973,8 +987,9 @@ write_nginx() {
   r_borrowed=$(jq -r '.reality.borrowed // false' "$state_file")
   h_domain=$(jq -r '.hy2.domain // empty' "$state_file")
   o_domain=$(jq -r '.openlist.domain // empty' "$state_file")
-  # 借用大厂域名时 Reality 无本地证书，web 主域名用 HY2 的
+  # 借用大厂域名时 Reality 无本地证书，web 主域名用 HY2 的；都没有时用 OpenList 独立域名
   if [[ $r_borrowed == true ]]; then web_domain=$h_domain; else web_domain=${r_domain:-$h_domain}; fi
+  web_domain=${web_domain:-$o_domain}
   local backup= ipv6_http= ipv6_https= d dir
   if has_ipv6; then
     ipv6_http='listen [::]:80;'
@@ -1080,9 +1095,9 @@ install_reality() {
   if [[ $BORROWED_SNI == 0 ]]; then
     step 1 4 '申请证书'
     issue_cert "$DOMAIN"
-    open_firewall_port tcp 80
+    open_firewall_port tcp 80 || say '警告：TCP 80 端口放行失败，请手动检查防火墙。'
   fi
-  open_firewall_port tcp "$RPORT"
+  open_firewall_port tcp "$RPORT" || say "警告：TCP $RPORT 端口放行失败，请手动检查防火墙。"
   step 2 4 '生成 Reality 密钥与配置'
   local keypair private public sid uuid
   keypair=$($XRAY_BIN x25519)
@@ -1091,7 +1106,9 @@ install_reality() {
   [[ -n $private && -n $public ]] || err 'Xray 密钥生成失败。'
   uuid=$($XRAY_BIN uuid)
   sid=$(random_hex 8)
-  jq --arg d "$DOMAIN" --argjson port "$RPORT" --argjson fallback "$fallback_port" --argjson borrowed "$BORROWED_SNI" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
+  local borrowed_bool=false
+  [[ $BORROWED_SNI == 1 ]] && borrowed_bool=true
+  jq --arg d "$DOMAIN" --argjson port "$RPORT" --argjson fallback "$fallback_port" --argjson borrowed "$borrowed_bool" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
     '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,fallback:$fallback,borrowed:$borrowed,users:[{uuid:$id,remark:"默认"}]}' \
     "$STATE" > "$TMP_DIR/state-new"
   step 3 4 '写入 Nginx 与 Xray 配置'
@@ -1120,8 +1137,8 @@ install_hy2() {
   confirm_install '确认开始安装' || return 1
   step 1 4 '申请证书'
   issue_cert "$DOMAIN"
-  open_firewall_port tcp 80
-  open_firewall_port udp "$HPORT"
+    open_firewall_port tcp 80 || say '警告：TCP 80 端口放行失败，请手动检查防火墙。'
+    open_firewall_port udp "$HPORT" || say "警告：UDP $HPORT 端口放行失败，请手动检查防火墙。"
   step 2 4 '生成 HY2 配置'
   local pass dir
   pass=$(random_hex 18)
@@ -1161,8 +1178,8 @@ install_ss() {
   jq --argjson port "$port" --arg pass "$pass" --arg address "$address" \
     '.ss={port:$port,password:$pass,address:$address}' "$STATE" > "$TMP_DIR/state-new"
   step 2 2 '生效配置'
-  open_firewall_port tcp "$port"
-  open_firewall_port udp "$port"
+  open_firewall_port tcp "$port" || say "警告：TCP $port 端口放行失败，请手动检查防火墙。"
+  open_firewall_port udp "$port" || say "警告：UDP $port 端口放行失败，请手动检查防火墙。"
   commit_state "$TMP_DIR/state-new"
   show_info
 }
@@ -1178,8 +1195,8 @@ show_link() {
 # 分享链接用的连接地址：优先公网 IPv4，没有可用 V4 时才用 IPv6（加方括号），都不行回退域名
 link_host() {
   local domain=$1 ip
-  # 先找公网 IPv4（排除私网/NAT 地址）
-  ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | grep -v '^100\.' | head -n1)
+  # 先找公网 IPv4（排除私网/CGNAT 地址；100.64.0.0/10 才是 CGNAT，不要误杀整个 100.0.0.0/8）
+  ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | grep -v '^100\.\(6[4-9]\|[7-9][0-9]\|1[0-2][0-7]\)\.' | head -n1)
   if [[ -z $ip ]]; then
     # 本机无公网 V4（如 NAT），尝试外网查询
     ip=$(curl -fsSL --max-time 8 -4 https://api.ipify.org 2>/dev/null)
@@ -1223,7 +1240,9 @@ collect_links() {
     printf '%s\t%s\n' 'HY2' "hysteria2://$pass@$(link_host "$h_domain"):$h_port?sni=$h_domain#HY2"
   fi
   if has_ss; then
-    pass=$(state_get '.ss.password'); port=$(state_get '.ss.port'); address=$(state_get '.ss.address')
+    pass=$(state_get '.ss.password'); port=$(state_get '.ss.port')
+    # 地址动态解析（换 IP 后分享链接自动更新，与 reality/hy2 一致）
+    address=$(link_host "")
     userpass="2022-blake3-aes-128-gcm:$pass"
     encoded=$(printf '%s' "$userpass" | url_base64)
     printf '%s\t%s\n' 'SS2022' "ss://$encoded@$address:$port#SS2022"
@@ -1334,6 +1353,7 @@ doctor() {
   if has_ss; then
     port=$(state_get '.ss.port')
     if [[ -n $(ss -H -ltn "sport = :$port" 2>/dev/null) ]]; then t_ok "SS TCP $port 监听正常"; else t_fail "SS TCP $port 未监听"; fi
+    if [[ -n $(ss -H -lun "sport = :$port" 2>/dev/null) ]]; then t_ok "SS UDP $port 监听正常"; else t_fail "SS UDP $port 未监听"; fi
   fi
   while IFS= read -r d; do
     [[ -n $d ]] || continue
@@ -1413,7 +1433,8 @@ restore() {
     [[ -e $src_path ]] || continue
     if [[ -d $src_path ]]; then
       install -d -m 700 "$(dirname "$dest_path")"
-      cp -a "$src_path" "$dest_path"
+      # -T：目标已存在时直接覆盖其内容，避免套娃成 dest/src_basename
+      cp -aT "$src_path" "$dest_path"
     else
       install -d -m 755 "$(dirname "$dest_path")"
       cp -a "$src_path" "$dest_path"
@@ -1740,14 +1761,14 @@ EOF
 # 手动放行端口：支持单个（80）、多个（80,443）、连续（8000-8010）、混合（80,8000-8010）
 cmd_open_ports() {
   require_root; detect_env
-  local input proto ans
+  local input proto
   read -r -p '请输入要放行的端口（单个/多个/连续，如 80 或 80,443 或 8000-8010）：' input
   [[ -n $input ]] || { say '已取消。'; return 0; }
   read -r -p '协议（tcp/udp/all，默认 all）：' proto
   proto=${proto:-all}
   proto=${proto,,}
   [[ $proto == tcp || $proto == udp || $proto == all ]] || { say '协议无效，已取消。'; return 0; }
-  local -a ports=() protos=()
+  local -a ports=() protos=() parts=()
   local part start end p
   # 解析端口：逗号分隔，每段可以是单个或 起-止
   IFS=',' read -ra parts <<< "$input"
