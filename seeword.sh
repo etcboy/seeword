@@ -559,10 +559,15 @@ ask_reality_sni() {
 }
 
 ask_domain() {
-  local proto=$1 other_domain input prompt label
+  local proto=$1 other_domain input prompt label borrowed
   if [[ $proto == reality ]]; then label='Reality'; else label='HY2'; fi
   if [[ $proto == reality ]]; then other_domain=$(state_get '.hy2.domain')
-  else other_domain=$(state_get '.reality.domain'); fi
+  else
+    # HY2 必须自有域名+证书，不能复用 Reality 的大厂伪装域名
+    borrowed=$(state_get '.reality.borrowed // false')
+    if [[ $borrowed == true ]]; then other_domain=''
+    else other_domain=$(state_get '.reality.domain'); fi
+  fi
   if [[ -n $other_domain ]]; then
     prompt="请输入 $label 的域名/SNI（回车沿用 $other_domain）："
   else
@@ -595,7 +600,10 @@ ask_reality_port() {
   [[ $input =~ ^[0-9]+$ ]] || err '端口无效。'
   (( input >= 1 && input <= 65535 )) || err '端口无效。'
   (( input != 80 )) || err '80 为保留端口，请换一个。'
-  (( input < 8443 || input > 8462 )) || err '8443-8462 为 Reality 回落保留端口段，请换一个。'
+  # 8443-8462 仅自有域名模式用作回落保留；大厂伪装模式回落直连真实站点，无需保留
+  if [[ ${BORROWED_SNI:-0} != 1 ]]; then
+    (( input < 8443 || input > 8462 )) || err '8443-8462 为 Reality 回落保留端口段，请换一个。'
+  fi
   if (( input == 443 )) && [[ -f $NGINX_CONF ]] && grep -qE 'listen[[:space:]]+443' "$NGINX_CONF"; then
     say '提示：TCP 443 当前由本站点 Nginx 提供 Web 服务，安装后将交由 Reality 接管（Web 界面改走 Reality 回落，继续可用）。'
   else
@@ -1129,13 +1137,16 @@ install_reality() {
   fi
   say "  TCP 端口：$RPORT"
   confirm_install '确认开始安装' || return 1
+  # 借用模式 3 步（无证书），自有域名 4 步
+  local total_steps=4 step_n=0
+  [[ $BORROWED_SNI == 1 ]] && total_steps=3
   if [[ $BORROWED_SNI == 0 ]]; then
-    step 1 4 '申请证书'
+    step_n=$((step_n+1)); step $step_n $total_steps '申请证书'
     issue_cert "$DOMAIN"
     open_firewall_port tcp 80 || say '警告：TCP 80 端口放行失败，请手动检查防火墙。'
   fi
   open_firewall_port tcp "$RPORT" || say "警告：TCP $RPORT 端口放行失败，请手动检查防火墙。"
-  step 2 4 '生成 Reality 密钥与配置'
+  step_n=$((step_n+1)); step $step_n $total_steps '生成 Reality 密钥与配置'
   local keypair private public sid uuid
   keypair=$($XRAY_BIN x25519)
   private=$(awk -F': ' '/Private ?[Kk]ey/{print $2}' <<< "$keypair" | head -n 1)
@@ -1148,13 +1159,13 @@ install_reality() {
   jq --arg d "$DOMAIN" --argjson port "$RPORT" --argjson fallback "$fallback_port" --argjson borrowed "$borrowed_bool" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
     '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,fallback:$fallback,borrowed:$borrowed,users:[{uuid:$id,remark:"默认"}]}' \
     "$STATE" > "$TMP_DIR/state-new"
-  step 3 4 '写入 Nginx 与 Xray 配置'
+  step_n=$((step_n+1)); step $step_n $total_steps '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
   "$XRAY_BIN" run -test -format json -config "$TMP_DIR/check-config" || err 'Reality 配置验证失败。'
   write_nginx "$TMP_DIR/state-new"
   commit_state "$TMP_DIR/state-new"
   sync_openlist_siteurl
-  step 4 4 '完成'
+  step_n=$((step_n+1)); step $step_n $total_steps '完成'
   show_info
 }
 
@@ -1692,9 +1703,9 @@ uninstall_protocol() {
         restart_or_start seeword || true
         err 'Nginx 配置更新失败，已恢复原有 Xray 配置。'
       fi
-      # 该域名若无其他协议使用，删除其证书
+      # 该域名若无其他协议/OpenList 使用，删除其证书
       if [[ -n $pdomain ]] && [[ $(jq -r --arg d "$pdomain" \
-          '[.reality.domain,.hy2.domain] | map(select(. != null)) | any(. == $d)' "$STATE") != true ]]; then
+          '[.reality.domain,.hy2.domain,.openlist.domain] | map(select(. != null)) | any(. == $d)' "$STATE") != true ]]; then
         remove_cert "$pdomain"
       fi
       sync_openlist_siteurl
