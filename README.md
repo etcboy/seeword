@@ -46,7 +46,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 | 选项 | 说明                                                                 |
 | ---- | -------------------------------------------------------------------- |
-| 1. 一键安装 Reality | 选择 SNI 伪装方式：①大厂域名（推荐，默认 www.icloud.com，无需证书，回落直连真实站点）；②自有域名（需 DNS 指向本机，优先 TCP 80 验证申请 Let's Encrypt 证书，80 被占用时改用 Cloudflare DNS API）。 |
+ | 1. 一键安装 Reality | 选择 SNI 伪装方式：①大厂域名（推荐）②自有域名。 |
 | 2. 一键安装 HY2     | 输入域名与 UDP 端口（默认 443）。                                     |
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
 | 4. 安装 OpenList    | SNI 伪装站，可选；有 Web 域名（Reality 自有域名/HY2）时自动复用，Nginx 自动反代到 OpenList；无 Web 域名时（如 Reality 大厂域名模式）可输入自有域名，会自动 DNS 检查、申请证书并建站；都不装则 Nginx 展示默认页面。 |
