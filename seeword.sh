@@ -1412,7 +1412,7 @@ doctor() {
         t_ok "证书 $d 有效（到期：$exp）"
       else t_fail "证书 $d 将在 30 天内过期或已过期"; fi
     else t_fail "证书 $d 缺失"; fi
-  done < <(jq -r '[.reality.domain, .hy2.domain] | map(select(. != null)) | unique | .[]' "$STATE")
+  done < <(jq -r '[if .reality.borrowed then null else .reality.domain end, .hy2.domain, .openlist.domain] | map(select(. != null)) | unique | .[]' "$STATE")
   if [[ -x $XRAY_BIN ]] && "$XRAY_BIN" api statsquery --server=127.0.0.1:10085 -pattern '>>>none' >/dev/null 2>&1; then
     t_ok 'Xray API（流量统计接口）可用'
   else t_fail 'Xray API 不可用（流量统计将无法工作）'; fi
