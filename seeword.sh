@@ -1601,6 +1601,45 @@ EOF
     esac
   done
 }
+# 手动放行端口：支持单个（80）、多个（80,443）、连续（8000-8010）、混合（80,8000-8010）
+cmd_open_ports() {
+  require_root; detect_env
+  local input proto ans
+  read -r -p '请输入要放行的端口（单个/多个/连续，如 80 或 80,443 或 8000-8010）：' input
+  [[ -n $input ]] || { say '已取消。'; return 0; }
+  read -r -p '协议（tcp/udp/all，默认 all）：' proto
+  proto=${proto:-all}
+  proto=${proto,,}
+  [[ $proto == tcp || $proto == udp || $proto == all ]] || { say '协议无效，已取消。'; return 0; }
+  local -a ports=() protos=()
+  local part start end p
+  # 解析端口：逗号分隔，每段可以是单个或 起-止
+  IFS=',' read -ra parts <<< "$input"
+  for part in "${parts[@]}"; do
+    part=${part// /}
+    [[ -n $part ]] || continue
+    if [[ $part == *-* ]]; then
+      start=${part%%-*}
+      end=${part##*-}
+      [[ $start =~ ^[0-9]+$ && $end =~ ^[0-9]+$ ]] || { say "端口格式错误：$part，已跳过。"; continue; }
+      (( start >= 1 && start <= 65535 && end >= 1 && end <= 65535 && start <= end )) || { say "端口范围无效：$part，已跳过。"; continue; }
+      for (( p=start; p<=end; p++ )); do ports+=("$p"); done
+    else
+      [[ $part =~ ^[0-9]+$ ]] || { say "端口格式错误：$part，已跳过。"; continue; }
+      (( part >= 1 && part <= 65535 )) || { say "端口无效：$part，已跳过。"; continue; }
+      ports+=("$part")
+    fi
+  done
+  (( ${#ports[@]} > 0 )) || { say '没有有效端口，已取消。'; return 0; }
+  if [[ $proto == all ]]; then protos=(tcp udp); else protos=("$proto"); fi
+  say "正在放行 ${#ports[@]} 个端口（${protos[*]}）…"
+  for p in "${ports[@]}"; do
+    for pr in "${protos[@]}"; do
+      open_firewall_port "$pr" "$p"
+    done
+  done
+  say '端口放行完成。'
+}
 tools_menu() {
   local choice src
   while true; do
@@ -1617,6 +1656,7 @@ tools_menu() {
 8. 重载服务
 9. 安装全部依赖
 10. 修复系统环境（软件源/DNS/网络）
+11. 放行防火墙端口
 0. 返回上级
 EOF
     read -r -p '请选择：' choice
@@ -1633,6 +1673,7 @@ EOF
       8) guarded reload_services ;;
       9) guarded cmd_deps ;;
       10) guarded fixenv ;;
+      11) guarded cmd_open_ports ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1705,8 +1746,8 @@ main() {
   local cmd=${1:-menu}
   case $cmd in
     menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
-doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv) ;;
-    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv]'; exit 2 ;;
+doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports) ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports]'; exit 2 ;;
   esac
   require_root; detect_env
   # 一键安装类命令先自动拉取最新脚本（静默，失败不阻塞）
@@ -1742,6 +1783,7 @@ doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv) ;;
     bbr) enable_bbr ;;
     deps) cmd_deps ;;
     fixenv) fixenv ;;
+    openports) cmd_open_ports ;;
   esac
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

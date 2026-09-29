@@ -74,6 +74,7 @@ sudo seeword restore <备份文件>    # 恢复配置
 sudo seeword bbr                  # 一键开启 BBR
 sudo seeword deps                 # 安装全部依赖（curl/jq/openssl/unzip/tar/qrencode/ss/cron/nginx）
 sudo seeword fixenv               # 修复极精简系统环境（软件源/DNS/网络），解决依赖装不上
+sudo seeword openports            # 手动放行防火墙端口（支持单个/多个/连续）
 sudo seeword reload               # 重载服务
 sudo seeword uninstall            # 一键全卸载
 sudo seeword uninstall-reality    # 只卸载 Reality
