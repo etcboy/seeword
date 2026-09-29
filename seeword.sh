@@ -105,7 +105,30 @@ state_init() {
 migrate_state() {
   [[ -f $STATE ]] || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  local v tmp
+  local v tmp migrated=0
+  tmp=$(mktemp)
+  # 幂等类型归一化：老版本 borrowed 存的是数字 0/1，转成真布尔值
+  # （jq 里 0 也是 truthy，不转会导致 Reality 回落 target 渲染成 域名:443 的错误值）
+  if jq -e '.reality.borrowed | type == "number"' "$STATE" >/dev/null 2>&1; then
+    if jq '.reality.borrowed = (.reality.borrowed == 1)' "$STATE" > "$tmp" 2>/dev/null; then
+      cat "$tmp" > "$STATE"
+      chmod 600 "$STATE"
+      migrated=1
+    fi
+  fi
+  rm -f "$tmp"
+  # state 修了但运行中的 Xray 配置还是旧的（错误 target），自动重渲染一次并重启
+  # （只在首次迁移时触发一次，之后 borrowed 已是布尔值不会再进）
+  if (( migrated )) && [[ -f ${XRAY_CONF:-/etc/xray/config.json} && -x ${XRAY_BIN:-/usr/local/bin/xray} ]]; then
+    local conf_tmp
+    conf_tmp=$(mktemp)
+    if render_config "$STATE" "$conf_tmp" 2>/dev/null && "$XRAY_BIN" run -test -format json -config "$conf_tmp" >/dev/null 2>&1; then
+      install -m 600 "$conf_tmp" "$XRAY_CONF" 2>/dev/null || true
+      if command -v svc >/dev/null 2>&1; then svc restart seeword >/dev/null 2>&1 || true; fi
+      say '提示：检测到旧版 Reality 配置已自动修复并重载生效。' >&2
+    fi
+    rm -f "$conf_tmp"
+  fi
   v=$(jq -r '.version // 1' "$STATE" 2>/dev/null || echo 1)
   (( v >= 2 )) && return 0
   tmp=$(mktemp)
@@ -225,17 +248,17 @@ fixenv() {
   require_root; detect_env
   say '== 检查外网连通性 =='
   # 双栈检测：IPv4 和 IPv6 任一通即可（纯 IPv6 服务器无 IPv4 路由）
-  # timeout 可能不存在（极简系统），用 command -v 检查后决定是否加超时
-  local _to=
-  command -v timeout >/dev/null 2>&1 && _to='timeout 8'
-  if $_to bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
-     $_to bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
+  # timeout 可能不存在（极简系统），用数组决定是否加超时
+  local -a _to=()
+  command -v timeout >/dev/null 2>&1 && _to=(timeout 8)
+  if "${_to[@]}" bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
+     "${_to[@]}" bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
     say '外网连通正常。'
   else
     err '无法连接外网（1.1.1.1:443 / [2606:4700:4700::1111]:443），请先检查服务器网络后再试。'
   fi
   say '== 检查 DNS 解析 =='
-  if $_to bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
+  if "${_to[@]}" bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
     say 'DNS 解析正常。'
   elif [[ -L /etc/resolv.conf ]]; then
     err 'DNS 解析失败，且 /etc/resolv.conf 由其他程序管理，请手动检查 DNS 配置。'
@@ -243,7 +266,7 @@ fixenv() {
     say 'DNS 解析失败，尝试写入公共 DNS（IPv4 + IPv6 双栈）。'
     [[ -f /etc/resolv.conf ]] && cp -a /etc/resolv.conf /etc/resolv.conf.bak
     printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\nnameserver 2001:4860:4860::8888\n' > /etc/resolv.conf
-    $_to bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
+    "${_to[@]}" bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
     say 'DNS 已修复（原文件已备份为 /etc/resolv.conf.bak）。'
   fi
   say '== 检查软件源 =='
@@ -893,9 +916,15 @@ install_openlist_standalone() {
   install_openlist "$domain"
   # 有 Web 协议或 OpenList 自有域名时，重写 Nginx
   if (( has_web )) || (( own_domain )); then
+    WRITE_NGINX_O443_SKIPPED=0
     write_nginx "$STATE" || err 'Nginx 配置更新失败。'
     sync_openlist_siteurl
-    say 'Nginx 已切换为反代 OpenList。'
+    if (( WRITE_NGINX_O443_SKIPPED )); then
+      say '警告：Reality 已占用 TCP 443，OpenList 独立域名无法在 443 建站。' >&2
+      say 'OpenList 仍可通过 http://服务器IP:5244 直接访问，或将 Reality 移出 443 后重装 OpenList。' >&2
+    else
+      say 'Nginx 已切换为反代 OpenList。'
+    fi
   else
     # 无域名时只能通过 IP:5244 直接访问，需放行防火墙
     open_firewall_port tcp 5244 || say '警告：TCP 5244 端口放行失败，请手动检查防火墙（OpenList 直接访问需要）。'
@@ -1033,8 +1062,14 @@ EOF
     nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$web_domain" "$(cert_dir "$web_domain")"
   fi
   # OpenList 独立域名：未被上面覆盖时单独建 443 站点（反代到 OpenList）
+  # 注意：Reality 占用 443/tcp 时 Nginx 无法监听 443，此时跳过建站（由调用方提示用户）
+  WRITE_NGINX_O443_SKIPPED=0
   if [[ -n $o_domain && $o_domain != "$web_domain" && $o_domain != "$r_domain" ]]; then
-    nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$o_domain" "$(cert_dir "$o_domain")"
+    if [[ -n $r_domain && $r_port == 443 ]]; then
+      WRITE_NGINX_O443_SKIPPED=1
+    else
+      nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$o_domain" "$(cert_dir "$o_domain")"
+    fi
   fi
   if ! nginx -t || ! restart_or_start nginx; then
     if [[ -n $backup ]]; then cp -a "$backup" "$NGINX_CONF"; else rm -f "$NGINX_CONF"; fi
@@ -1241,8 +1276,9 @@ collect_links() {
   fi
   if has_ss; then
     pass=$(state_get '.ss.password'); port=$(state_get '.ss.port')
-    # 地址动态解析（换 IP 后分享链接自动更新，与 reality/hy2 一致）
-    address=$(link_host "")
+    # 地址优先用域名（换 IP 后分享链接自动更新，与原来 public_address 逻辑一致），没有再用 IP
+    address=$(web_domain 2>/dev/null || true)
+    [[ -z $address ]] && address=$(link_host "")
     userpass="2022-blake3-aes-128-gcm:$pass"
     encoded=$(printf '%s' "$userpass" | url_base64)
     printf '%s\t%s\n' 'SS2022' "ss://$encoded@$address:$port#SS2022"
