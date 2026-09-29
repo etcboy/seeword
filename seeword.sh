@@ -671,6 +671,7 @@ ensure_http_challenge() {
   local domain=$1 ipv6_http= esc
   esc=${domain//./\\.}
   install -d -m 755 "$ACME_WEBROOT/.well-known/acme-challenge"
+  chmod 755 "$ACME_WEBROOT" "$ACME_WEBROOT/.well-known" "$ACME_WEBROOT/.well-known/acme-challenge"
   if { [[ -f $NGINX_CONF ]] && grep -qE "server_name([^;]*[ \t])?$esc([ ;]|$)" "$NGINX_CONF"; } \
     || { [[ -f $ACME_TMP_CONF ]] && grep -qE "server_name([^;]*[ \t])?$esc([ ;]|$)" "$ACME_TMP_CONF"; }; then
     return 0
@@ -964,6 +965,7 @@ nginx_default_root() {
   done
   # 兜底：生成一个极简欢迎页
   install -d -m 755 "$ACME_WEBROOT"
+  chmod 755 "$ACME_WEBROOT"
   if [[ ! -f $ACME_WEBROOT/index.html ]]; then
     cat > "$ACME_WEBROOT/index.html" <<'EOF'
 <!DOCTYPE html>
