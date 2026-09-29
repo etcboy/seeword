@@ -1605,6 +1605,14 @@ uninstall_all() {
   purge_openlist
   # 卸载 Nginx 软件包（含其配置文件）
   pkg_remove nginx
+  # 先用 acme.sh 自带卸载清理 cron 续签任务，再删目录（避免 cron 每天报错找不到文件）
+  if [[ -x /root/.acme.sh/acme.sh ]]; then
+    /root/.acme.sh/acme.sh --uninstall >/dev/null 2>&1 || true
+  fi
+  # 兜底：手动清理残留的 acme.sh cron 条目
+  if command -v crontab >/dev/null 2>&1; then
+    (crontab -l 2>/dev/null | grep -v 'acme.sh' | crontab -) 2>/dev/null || true
+  fi
   # 删除 acme.sh 程序及其管理的全部证书记录
   rm -rf -- /root/.acme.sh
   rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF" /usr/local/bin/sw
