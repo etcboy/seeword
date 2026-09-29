@@ -26,7 +26,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 | 事项   | 说明                                                                                                  |
 | ------ | ----------------------------------------------------------------------------------------------------- |
-| 域名   | HY2 必须用自有域名（DNS A/AAAA 指向服务器，v2rayN 不支持跳过证书校验）；Reality 可选大厂域名伪装（默认 www.icloud.com，无需自有域名和证书）或自有域名。Reality 与 HY2 可共用也可分开。Cloudflare 托管请用“仅 DNS”，不要开启代理。NAT/纯 IPv6 服务器：域名做 AAAA 解析到本机 IPv6 即可，输入域名后脚本会自动检查解析并区分 v4/v6。 |
+| 域名   | HY2 必须用自有域名；Reality 可选大厂域名伪装或自有域名。Reality 与 HY2 可共用也可分开。Cloudflare 托管请用“仅 DNS”，不要开启代理。NAT/纯 IPv6 服务器：域名做 AAAA 解析到本机 IPv6 即可，输入域名后脚本会自动检查解析并区分 v4/v6。 |
 | 端口   | Reality TCP（默认 443）、HY2 UDP（默认 443）、SS 自选 TCP/UDP；HTTP 证书验证需要 TCP 80（含 IPv6）。脚本会自动尝试放行（ufw / firewalld / iptables+ip6tables）。 |
 | 系统   | Debian/Ubuntu、RHEL/Fedora/CentOS 8+、Alpine；服务管理支持 systemd 与 OpenRC。                          |
 | 依赖   | Nginx、qrencode 等由系统包安装；Xray/OpenList 从官方 release 下载并校验 `.dgst`。可用架构以官方发布为准，下载前会检查。 |
