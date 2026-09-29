@@ -1244,7 +1244,7 @@ show_link() {
 link_host() {
   local domain=$1 ip
   # 先找公网 IPv4（排除私网/CGNAT 地址；100.64.0.0/10 才是 CGNAT，不要误杀整个 100.0.0.0/8）
-  ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | grep -v '^100\.\(6[4-9]\|[7-9][0-9]\|1[0-2][0-7]\)\.' | head -n1)
+  ip=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | grep -v '^127\.' | grep -v '^10\.' | grep -v '^172\.1[6-9]\.' | grep -v '^172\.2[0-9]\.' | grep -v '^172\.3[0-1]\.' | grep -v '^192\.168\.' | grep -v '^100\.\(6[4-9]\|[7-9][0-9]\|1[0-2][0-7]\)\.' | head -n1 || true)
   if [[ -z $ip ]]; then
     # 本机无公网 V4（如 NAT），尝试外网查询
     ip=$(curl -fsSL --max-time 8 -4 https://api.ipify.org 2>/dev/null)
@@ -1254,7 +1254,7 @@ link_host() {
     return 0
   fi
   # V4 不可用，用 IPv6
-  ip=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1 | grep -v '^fe80' | head -n1)
+  ip=$(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1 | grep -v '^fe80' | head -n1 || true)
   if [[ -n $ip ]]; then
     printf '[%s]' "$ip"
   else
