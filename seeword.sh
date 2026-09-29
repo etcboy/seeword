@@ -652,12 +652,23 @@ issue_cert() {
     say 'TCP 80 可用，使用 HTTP 验证申请证书。'
     ensure_http_challenge "$domain"
     if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
-      say 'HTTP 80 证书申请失败：可能域名未解析到本机，或 TCP 80 未放行（含云安全组、IPv6 防火墙）。'
-      if confirm_install '是否改用 Cloudflare DNS API 验证'; then
-        CERT_METHOD=dns
-      else
-        err '已取消证书申请。'
-      fi
+      say ''
+      say 'HTTP 证书申请失败，可能的原因：'
+      say '  1. 域名没有正确解析到本机 IP'
+      say '  2. TCP 80 端口没有放行（系统防火墙或云服务商安全组）'
+      say ''
+      say '请选择：'
+      say '  1) 先放行 80 端口再重试：退出后进主菜单 → 6.更多工具 → 11.放行防火墙端口，输入 80 放行，然后重新安装'
+      say '  2) 改用 Cloudflare DNS API 申请证书（需要 Cloudflare API Token，不依赖 80 端口）'
+      say '  0) 取消安装'
+      say ''
+      local cert_choice
+      read -r -p '请选择 [1/2/0]：' cert_choice
+      case "$cert_choice" in
+        2) CERT_METHOD=dns ;;
+        1) err '已退出。请放行 80 端口后重新运行安装。' ;;
+        *) err '已取消证书申请。' ;;
+      esac
     fi
   else
     CERT_METHOD=dns
