@@ -379,6 +379,7 @@ command="$XRAY_BIN"
 command_args="run -c $XRAY_CONF"
 command_background=true
 pidfile="/run/seeword.pid"
+rc_ulimit="-n 1048576"
 export XRAY_LOCATION_ASSET="$XRAY_ASSETS"
 depend() { need net; }
 EOF
