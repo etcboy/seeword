@@ -832,25 +832,54 @@ purge_openlist() {
   fi
   if [[ -f $ROOT/openlist-owned ]]; then rm -rf -- "$OPENLIST_DIR"; fi
   rm -f -- "$ROOT/openlist-password" "$ROOT/openlist-owned"
+  # 清理 OpenList 独立域名：state 中移除，无其他协议使用时删除证书
+  if [[ -f $STATE ]]; then
+    local o_domain r_domain h_domain tmp
+    o_domain=$(jq -r '.openlist.domain // empty' "$STATE")
+    if [[ -n $o_domain ]]; then
+      r_domain=$(jq -r '.reality.domain // empty' "$STATE")
+      h_domain=$(jq -r '.hy2.domain // empty' "$STATE")
+      if [[ $o_domain != "$r_domain" && $o_domain != "$h_domain" ]]; then
+        remove_cert "$o_domain" 2>/dev/null || true
+      fi
+      tmp=$(mktemp)
+      jq 'del(.openlist)' "$STATE" > "$tmp" && cat "$tmp" > "$STATE"
+      rm -f "$tmp"
+    fi
+  fi
 }
 # 单独安装 OpenList（SNI 伪装，可选）
 install_openlist_standalone() {
   require_root; detect_env
   ensure_deps
   state_init; init_tmp
-  local domain= has_web=0
+  local domain= has_web=0 own_domain=0
   if [[ -f $STATE ]]; then
     domain=$(web_domain 2>/dev/null || true)
     { has_reality || has_hy2; } && has_web=1
   fi
   if [[ -z $domain ]]; then
     read -r -p 'OpenList 访问域名（可留空，稍后在 OpenList 后台设置）：' domain
+    if [[ -n $domain ]]; then
+      domain=${domain,,}
+      valid_domain "$domain" || err '域名格式不正确。'
+      check_domain_dns "$domain" || return 1
+      own_domain=1
+    fi
   else
     say "OpenList 将绑定到现有 Web 域名：$domain"
   fi
   [[ -x $OPENLIST_DIR/openlist ]] || check_port_free tcp 5244
+  # 自有域名：申请证书并存入 state，供 Nginx 建站用
+  if (( own_domain )); then
+    issue_cert "$domain"
+    open_firewall_port tcp 80
+    open_firewall_port tcp 443
+    jq --arg d "$domain" '.openlist={domain:$d}' "$STATE" > "$TMP_DIR/state-new" && commit_state "$TMP_DIR/state-new"
+  fi
   install_openlist "$domain"
-  if (( has_web )); then
+  # 有 Web 协议或 OpenList 自有域名时，重写 Nginx
+  if (( has_web )) || (( own_domain )); then
     write_nginx "$STATE" || err 'Nginx 配置更新失败。'
     sync_openlist_siteurl
     say 'Nginx 已切换为反代 OpenList。'
@@ -935,13 +964,14 @@ EOF
 }
 
 write_nginx() {
-  local state_file=$1 r_domain r_port r_fallback h_domain web_domain r_borrowed
+  local state_file=$1 r_domain r_port r_fallback h_domain o_domain web_domain r_borrowed
   r_domain=$(jq -r '.reality.domain // empty' "$state_file")
   r_port=$(jq -r '.reality.port // 443' "$state_file")
   r_fallback=$(jq -r '.reality.fallback // 8443' "$state_file")
   r_borrowed=$(jq -r '.reality.borrowed // false' "$state_file")
   h_domain=$(jq -r '.hy2.domain // empty' "$state_file")
-  # 借用大厂域名时 Reality 无本地证书，web 站点只用 HY2 的域名
+  o_domain=$(jq -r '.openlist.domain // empty' "$state_file")
+  # 借用大厂域名时 Reality 无本地证书，web 主域名用 HY2 的
   if [[ $r_borrowed == true ]]; then web_domain=$h_domain; else web_domain=${r_domain:-$h_domain}; fi
   local backup= ipv6_http= ipv6_https= d dir
   if has_ipv6; then
@@ -975,15 +1005,19 @@ server {
     location / { return 301 https://\$host\$request_uri; }
 }
 EOF
-  done < <(jq -r '[if .reality.borrowed then null else .reality.domain end, .hy2.domain] | map(select(. != null)) | unique | .[]' "$state_file")
+  done < <(jq -r '[if .reality.borrowed then null else .reality.domain end, .hy2.domain, .openlist.domain] | map(select(. != null)) | unique | .[]' "$state_file")
   # Reality 回落块（xray reality 的 target，127.0.0.1:回落端口；8443 被占用时自动顺延）
   # 借用大厂域名时回落直连真实站点，无需本地 Nginx 块
   if [[ -n $r_domain && $r_borrowed != true ]]; then
     nginx_server_block "    listen 127.0.0.1:$r_fallback ssl;" "$r_domain" "$(cert_dir "$r_domain")"
   fi
   # 公网 443 Web 块：Reality 未占用 443/tcp 时提供
-  if [[ -z $r_domain || $r_port != 443 ]]; then
+  if [[ -n $web_domain && ( -z $r_domain || $r_port != 443 ) ]]; then
     nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$web_domain" "$(cert_dir "$web_domain")"
+  fi
+  # OpenList 独立域名：未被上面覆盖时单独建 443 站点（反代到 OpenList）
+  if [[ -n $o_domain && $o_domain != "$web_domain" && $o_domain != "$r_domain" ]]; then
+    nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$o_domain" "$(cert_dir "$o_domain")"
   fi
   if ! nginx -t || ! restart_or_start nginx; then
     if [[ -n $backup ]]; then cp -a "$backup" "$NGINX_CONF"; else rm -f "$NGINX_CONF"; fi
@@ -1194,13 +1228,13 @@ collect_links() {
   fi
 }
 
-# Web 界面（OpenList）使用的域名：优先 Reality 的（借用大厂域名的跳过，用 HY2 的）
+# Web 界面（OpenList）使用的域名：优先 Reality 的（借用大厂域名的跳过），其次 HY2，最后 OpenList 独立域名
 web_domain() {
-  local r h borrowed
+  local r h o borrowed
   borrowed=$(state_get '.reality.borrowed // false')
-  r=$(state_get '.reality.domain'); h=$(state_get '.hy2.domain')
+  r=$(state_get '.reality.domain'); h=$(state_get '.hy2.domain'); o=$(state_get '.openlist.domain')
   if [[ $borrowed == true ]]; then r=''; fi
-  printf '%s' "${r:-$h}"
+  printf '%s' "${r:-${h:-$o}}"
 }
 
 show_info() {
