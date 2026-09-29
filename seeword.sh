@@ -653,7 +653,7 @@ issue_cert() {
     ensure_http_challenge "$domain"
     if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
       say 'HTTP 80 证书申请失败：可能域名未解析到本机，或 TCP 80 未放行（含云安全组、IPv6 防火墙）。'
-      if confirm_go '是否改用 Cloudflare DNS API 验证'; then
+      if confirm_install '是否改用 Cloudflare DNS API 验证'; then
         CERT_METHOD=dns
       else
         err '已取消证书申请。'
