@@ -101,7 +101,7 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 
 ## 证书与续期
 
-- 申请证书时优先 TCP 80 的 HTTP 验证；若 80 端口被占用，自动改用 Cloudflare DNS API 验证（需提供 API Token）；HTTP 验证失败时（如 80 未放行）会询问是否切换 DNS API。验证方式记录在各域名证书目录的 `method` 文件中，续期沿用。
+- 申请证书时优先 TCP 80 的 HTTP 验证；若 80 端口被占用，自动改用 Cloudflare DNS API 验证（需提供 API Token）；HTTP 验证失败时（如 80 未放行）会给出两个选项：1) 放行 80 端口后重试，2) 改用 DNS API。验证方式记录在各域名证书目录的 `method` 文件中，续期沿用。
 - 证书由 acme.sh 自动续期，成功后重载 Nginx 与 Xray。
 - HTTP 验证使用 Nginx ACME webroot，续期无需停服务；DNS 验证通过 Cloudflare API 自动更新 TXT 记录。
 - 纯 IPv6 服务器已验证：ACME 临时站点与主站点自动监听 `[::]:80`/`[::]:443`，Reality/HY2/SS 入站为双栈监听（`::`），Let's Encrypt 经 IPv6 的 HTTP-01 验证可正常签发。
