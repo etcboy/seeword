@@ -53,6 +53,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 | 5. 查看配置与状态   | 分享链接、二维码、OpenList 登录信息、服务状态。                       |
 | 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理子菜单（查看/添加/删除）、流量统计、一键体检、备份/恢复、重载服务、安装全部依赖、修复系统环境、放行防火墙端口。 |
 | 7. 卸载管理         | 二级菜单：彻底全卸载，或单独卸载 Reality / HY2 / SS2022 / OpenList。   |
+| 8. 更新脚本         | 从 GitHub 拉取最新版脚本并替换本地版本。 |
 
 ### 常用子命令
 
@@ -76,6 +77,7 @@ sudo seeword bbr                  # 一键开启 BBR
 sudo seeword deps                 # 安装全部依赖（curl/jq/openssl/unzip/tar/qrencode/ss/cron/nginx）
 sudo seeword fixenv               # 修复极精简系统环境（软件源/DNS/网络），解决依赖装不上
 sudo seeword openports            # 手动放行防火墙端口（支持单个/多个/连续）
+sudo seeword update-script         # 更新脚本到最新版
 sudo seeword reload               # 重载服务
 sudo seeword uninstall            # 一键全卸载
 sudo seeword uninstall-reality    # 只卸载 Reality

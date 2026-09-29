@@ -1703,6 +1703,35 @@ guarded() {
   ( take_lock; setup_logging; "$@" ) || true
 }
 
+# 手动更新脚本到最新版：强制拉取，替换本地脚本
+update_script() {
+  require_root; detect_env
+  local src=${SEEWORLD_URL:-https://raw.githubusercontent.com/etcboy/seeword/main/seeword.sh}
+  src="$src?t=$(date +%s)"
+  local tmp
+  tmp=$(mktemp) || err '创建临时文件失败。'
+  trap 'rm -f "$tmp"' RETURN
+  say '正在从 GitHub 拉取最新脚本…'
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --retry 3 "$src" -o "$tmp" || err '下载失败，请检查网络。'
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$tmp" "$src" || err '下载失败，请检查网络。'
+  else
+    err '需要 curl 或 wget。'
+  fi
+  [[ -s $tmp ]] || err '下载内容为空。'
+  grep -q 'seeword' "$tmp" || err '下载内容异常。'
+  bash -n "$tmp" || err '下载的脚本语法校验失败。'
+  if cmp -s "$tmp" "$SELF"; then
+    say '当前已是最新版，无需更新。'
+    return 0
+  fi
+  cp -a "$SELF" "$SELF.bak" 2>/dev/null || true
+  install -m 755 "$tmp" "$SELF"
+  [[ -L /usr/local/bin/sw ]] || ln -sf "$SELF" /usr/local/bin/sw 2>/dev/null || true
+  say '脚本已更新到最新版（旧版已备份为 seeword.bak）。'
+}
+
 menu() {
   local choice
   while true; do
@@ -1716,6 +1745,7 @@ menu() {
 5. 查看配置、分享链接和服务状态
 6. 更多工具
 7. 卸载管理
+8. 更新脚本
 0. 退出
 EOF
     read -r -p '请选择：' choice
@@ -1727,6 +1757,7 @@ EOF
       5) show_info ;;
       6) tools_menu ;;
       7) uninstall_menu ;;
+      8) guarded update_script ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1764,8 +1795,8 @@ main() {
   local cmd=${1:-menu}
   case $cmd in
     menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
-doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports) ;;
-    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports]'; exit 2 ;;
+doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|update-script) ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|update-script]'; exit 2 ;;
   esac
   require_root; detect_env
   # 一键安装类命令先自动拉取最新脚本（静默，失败不阻塞）
@@ -1802,6 +1833,7 @@ doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports) ;
     deps) cmd_deps ;;
     fixenv) fixenv ;;
     openports) cmd_open_ports ;;
+    update-script) update_script ;;
   esac
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
