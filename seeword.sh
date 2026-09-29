@@ -14,7 +14,6 @@ ACME_WEBROOT=/var/www/seeword
 CERT_ROOT=/etc/nginx/zs
 ACME=/root/.acme.sh/acme.sh
 SELF=/usr/local/bin/seeword
-LEGACY_SELF=/usr/local/bin/xray-manager
 TMP_DIR=
 INIT=
 PKG=
@@ -340,7 +339,7 @@ install_xray_service() {
   if [[ $INIT == systemd ]]; then
     cat > /etc/systemd/system/seeword.service <<EOF
 [Unit]
-Description=Personal Xray manager service
+Description=Seeword service
 After=network-online.target
 Wants=network-online.target
 
@@ -361,7 +360,7 @@ EOF
   else
     cat > /etc/init.d/seeword <<EOF
 #!/sbin/openrc-run
-name="Personal Xray"
+name="Seeword"
 command="$XRAY_BIN"
 command_args="run -c $XRAY_CONF"
 command_background=true
@@ -978,53 +977,13 @@ public_address() {
   printf '%s' "$ip"
 }
 
-# 旧版 xray-manager 路径迁移到 seeword（2026-09-29 改名）
-# 已安装旧版的系统首次运行时自动迁移：状态目录、服务名、Nginx 配置等
-migrate_legacy_paths() {
-  local old_root=/etc/xray-manager
-  # 状态目录（含 state.json 和证书）：/etc/xray-manager → /etc/seeword
-  if [[ -d $old_root && ! -d $ROOT ]]; then
-    mv "$old_root" "$ROOT" 2>/dev/null || return 0
-    say '已迁移旧版数据目录 /etc/xray-manager → /etc/seeword'
-  fi
-  [[ -d $old_root ]] || return 0
-  # systemd 服务：xray-manager.service → seeword.service
-  if [[ -f /etc/systemd/system/xray-manager.service && ! -f /etc/systemd/system/seeword.service ]]; then
-    systemctl stop xray-manager 2>/dev/null || true
-    systemctl disable xray-manager 2>/dev/null || true
-    mv /etc/systemd/system/xray-manager.service /etc/systemd/system/seeword.service
-    systemctl daemon-reload 2>/dev/null || true
-    systemctl enable seeword 2>/dev/null || true
-    say '已迁移系统服务 xray-manager → seeword'
-  fi
-  # init.d 脚本
-  if [[ -f /etc/init.d/xray-manager && ! -f /etc/init.d/seeword ]]; then
-    sed 's/xray-manager/seeword/g' /etc/init.d/xray-manager > /etc/init.d/seeword
-    chmod 755 /etc/init.d/seeword
-    rm -f /etc/init.d/xray-manager
-  fi
-  # Nginx 站点配置
-  [[ -f /etc/nginx/conf.d/xray-manager.conf ]] && mv /etc/nginx/conf.d/xray-manager.conf "$NGINX_CONF" 2>/dev/null || true
-  [[ -f /etc/nginx/conf.d/xray-manager-acme.conf ]] && mv /etc/nginx/conf.d/xray-manager-acme.conf "$ACME_TMP_CONF" 2>/dev/null || true
-  # ACME webroot
-  [[ -d /var/www/xray-manager && ! -d $ACME_WEBROOT ]] && mv /var/www/xray-manager "$ACME_WEBROOT" 2>/dev/null || true
-  # 日志文件
-  [[ -f /var/log/xray-manager.log && ! -f $LOG_FILE ]] && mv /var/log/xray-manager.log "$LOG_FILE" 2>/dev/null || true
-  # BBR 配置
-  [[ -f /etc/sysctl.d/99-xray-manager-bbr.conf ]] && mv /etc/sysctl.d/99-xray-manager-bbr.conf /etc/sysctl.d/99-seeword-bbr.conf 2>/dev/null || true
-  # 清理旧目录残留
-  rmdir "$old_root" 2>/dev/null || true
-}
 install_common() {
   require_root; detect_env
-  migrate_legacy_paths
   [[ ! -f $XRAY_CONF || -f $STATE ]] || err '检测到已有非本脚本管理的 Xray 配置，停止以避免覆盖。'
   [[ ! -x $XRAY_BIN || -f $ROOT/core-owned ]] || err '检测到已有非本脚本管理的 Xray 内核，停止以避免覆盖。'
   ensure_deps
   state_init; init_tmp
   if [[ ! -f $SELF ]] || ! cmp -s "${BASH_SOURCE[0]}" "$SELF"; then install -m 755 "${BASH_SOURCE[0]}" "$SELF"; fi
-  # 旧命令迁移：删掉上一版安装的 /usr/local/bin/xray-manager
-  [[ $SELF == "$LEGACY_SELF" || ! -e $LEGACY_SELF ]] || rm -f -- "$LEGACY_SELF"
   if [[ ! -f $ROOT/core-owned ]]; then install_xray_core; touch "$ROOT/core-owned"; fi
 }
 
@@ -1596,7 +1555,7 @@ uninstall_all() {
   pkg_remove nginx
   # 删除 acme.sh 程序及其管理的全部证书记录
   rm -rf -- /root/.acme.sh
-  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF" "$LEGACY_SELF"
+  rm -f -- "$XRAY_CONF" "$XRAY_BIN" "$SELF"
   rm -f -- "$XRAY_ASSETS/geoip.dat" "$XRAY_ASSETS/geosite.dat"
   rm -rf -- "$ROOT"
   rm -f -- "$LOG_FILE"
