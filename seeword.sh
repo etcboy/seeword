@@ -1177,7 +1177,12 @@ show_status() {
   say '\n服务状态：'
   local name
   for name in seeword openlist-manager nginx; do
-    if svc_active "$name"; then say "$name：运行中"; else say "$name：未运行"; fi
+    case $name in
+      seeword) label='seeword' ;;
+      openlist-manager) label='OpenList' ;;
+      nginx) label='Nginx' ;;
+    esac
+    if svc_active "$name"; then say "$label：运行中"; else say "$label：未运行"; fi
   done
   if [[ -x $XRAY_BIN ]]; then "$XRAY_BIN" version | sed -n '1p'; fi
 }
@@ -1218,7 +1223,7 @@ doctor() {
   else t_fail 'Xray 配置文件缺失'; fi
   if svc_active seeword; then t_ok 'seeword 服务运行中'; else t_fail 'seeword 服务未运行'; fi
   if [[ -x $OPENLIST_DIR/openlist ]]; then
-    if svc_active openlist-manager; then t_ok 'openlist-manager 服务运行中'; else t_fail 'openlist-manager 服务未运行'; fi
+    if svc_active openlist-manager; then t_ok 'OpenList 服务运行中'; else t_fail 'OpenList 服务未运行'; fi
   fi
   if has_reality || has_hy2; then
     if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
