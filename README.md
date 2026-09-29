@@ -36,7 +36,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 - 多协议共存：Reality、HY2、SS2022 可按需组合安装。
 - Reality 支持多用户：`adduser` / `deluser` / `users` 增删查用户。
-- 443 端口智能处理：Reality 占用 TCP 443 时，本机 Nginx 的 443 站点自动让位；未通过 Reality 认证的 HTTPS 请求：自有域名模式回落到 Nginx 展示默认页面（已安装 OpenList 则反代到 OpenList）；大厂域名伪装模式直接回落到真实站点（如 www.icloud.com），无需本地 Nginx。
+- 443 端口智能处理：Reality 占用 TCP 443 时，本机 Nginx 的 443 站点自动让位；未通过 Reality 认证的 HTTPS 请求：自有域名模式回落到 Nginx 展示默认页面（已安装 OpenList 则反代到 OpenList）；大厂域名伪装模式直接回落到真实站点，无需本地 Nginx。
 - OpenList 独立安装：不再随 Reality/HY2 自动安装；如需用它做 SNI 伪装站，在主菜单单独安装，可随时独立卸载。
 - 证书按完整域名独立存放，每个域名独立记录验证方式（HTTP/DNS），acme.sh 自动续期。
 - 工具箱：一键体检、流量统计、备份/恢复、BBR、重载服务、内核更新。
