@@ -26,6 +26,13 @@ confirm_go() {
   read -r -p "$1 [y/N]：" ans
   [[ ${ans,,} == y ]] || { say '已取消。'; return 1; }
 }
+# 安装确认：默认 Y，回车即继续
+confirm_install() {
+  local ans
+  read -r -p "$1 [Y/n]：" ans
+  [[ ${ans,,} == n ]] && { say '已取消。'; return 1; }
+  return 0
+}
 
 take_lock() {
   command -v flock >/dev/null 2>&1 || err '缺少 flock 工具。'
@@ -443,20 +450,10 @@ resolve_ips() {
     nslookup "$d" 2>/dev/null | awk '/^Address: / && $2 !~ /#/{print $2}' | sort -u
   fi
 }
-is_private_v4() {
-  local ip=$1 a b rest
-  [[ $ip =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
-  IFS=. read -r a b rest <<< "$ip"
-  (( 10#$a == 10 )) && return 0
-  (( 10#$a == 172 && 10#$b >= 16 && 10#$b <= 31 )) && return 0
-  (( 10#$a == 192 && 10#$b == 168 )) && return 0
-  (( 10#$a == 100 && 10#$b >= 64 && 10#$b <= 127 )) && return 0
-  return 1
-}
-# 输入域名/SNI 后检查 DNS：分辨 A/AAAA，核对是否指向本机（NAT 纯 v6 环境重点看 AAAA）
+# 输入域名/SNI 后检查 DNS：A 记录比公网 v4，AAAA 记录比公网 v6
 check_domain_dns() {
-  local domain=$1 ip pub4 pub6 local_v4 v6_hit=0 v4_hit=0 v4_nat=0 lip
-  local -a a_list=() aaaa_list=() local_v6=()
+  local domain=$1 ip pub4 pub6
+  local -a a_list=() aaaa_list=()
   say "正在检查域名 $domain 的 DNS 解析…"
   while IFS= read -r ip; do
     [[ -n $ip ]] || continue
@@ -470,47 +467,29 @@ check_domain_dns() {
     fi
     err "域名 $domain 未能解析到任何 IP，请先做好 DNS 解析再安装。"
   fi
-  # 本机地址：公网出口 IP + 本地全局地址
+  # 本机公网 IP
   pub4=$(curl -4 -fsSL --max-time 5 https://api.ipify.org 2>/dev/null || true)
   pub6=$(curl -6 -fsSL --max-time 5 https://api64.ipify.org 2>/dev/null || true)
-  if command -v ip >/dev/null 2>&1; then
-    while IFS= read -r lip; do
-      [[ -n $lip && $lip != fe80:* ]] || continue
-      local_v6+=("$lip")
-    done < <(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1)
-    local_v4=$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1)
-  fi
-  if [[ -n ${local_v4:-} ]] && is_private_v4 "$local_v4"; then v4_nat=1; fi
   say "DNS 解析结果："
   if (( ${#aaaa_list[@]} > 0 )); then say "  AAAA（IPv6）：${aaaa_list[*]}"; else say '  AAAA（IPv6）：无'; fi
   if (( ${#a_list[@]} > 0 )); then say "  A（IPv4）：${a_list[*]}"; else say '  A（IPv4）：无'; fi
-  say '本机地址：'
-  if (( ${#local_v6[@]} > 0 )); then say "  IPv6：${local_v6[*]}"; else say '  IPv6：无'; fi
-  if [[ -n ${local_v4:-} ]]; then
-    if (( v4_nat )); then say "  IPv4：$local_v4（NAT 内网地址，入站不可达）"
-    else say "  IPv4：$local_v4"; fi
-  else say '  IPv4：无'; fi
-  # 核对域名是否指向本机
-  if (( ${#aaaa_list[@]} > 0 )); then
-    for ip in "${aaaa_list[@]}"; do
-      if [[ $ip == "$pub6" ]]; then v6_hit=1; break; fi
-      if (( ${#local_v6[@]} > 0 )) && printf '%s\n' "${local_v6[@]}" | grep -qx "$ip"; then v6_hit=1; break; fi
-    done
-  fi
-  if (( ${#a_list[@]} > 0 && v4_nat == 0 )); then
+  say "本机公网 IP：IPv4=${pub4:-无} IPv6=${pub6:-无}"
+  # 核对：A 记录比公网 v4，AAAA 记录比公网 v6，对上即正确
+  local v4_ok=0 v6_ok=0
+  if (( ${#a_list[@]} > 0 )) && [[ -n $pub4 ]]; then
     for ip in "${a_list[@]}"; do
-      if [[ $ip == "$pub4" || $ip == "${local_v4:-}" ]]; then v4_hit=1; break; fi
+      [[ $ip == "$pub4" ]] && { v4_ok=1; break; }
     done
   fi
-  if (( v6_hit )); then
-    say '结论：域名经 IPv6（AAAA）正确指向本机，证书 HTTP 验证将走 IPv6。'
-  elif (( v4_hit )); then
-    say '结论：域名经 IPv4（A）正确指向本机，证书 HTTP 验证将走 IPv4。'
+  if (( ${#aaaa_list[@]} > 0 )) && [[ -n $pub6 ]]; then
+    for ip in "${aaaa_list[@]}"; do
+      [[ $ip == "$pub6" ]] && { v6_ok=1; break; }
+    done
+  fi
+  if (( v4_ok || v6_ok )); then
+    say '结论：域名解析正确，指向本机。'
   else
-    say '警告：域名解析到的 IP 与本机地址不一致，HTTP 证书验证很可能失败。'
-    if (( v4_nat )) && (( ${#aaaa_list[@]} == 0 )); then
-      say '提示：本机 IPv4 为 NAT 内网地址（入站不可达），请为域名添加 AAAA 记录指向本机 IPv6。'
-    fi
+    say '警告：域名解析到的 IP 与本机公网 IP 不一致，HTTP 证书验证很可能失败。'
     confirm_go '仍要继续安装' || return 1
   fi
 }
@@ -1002,7 +981,7 @@ install_reality() {
   say "  TCP 端口：$RPORT"
   say "  回落端口：127.0.0.1:$fallback_port（8443 被占用时自动顺延）"
   if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
-  confirm_go '确认开始安装' || return 1
+  confirm_install '确认开始安装' || return 1
   step 1 4 '申请证书'
   issue_cert "$DOMAIN"
   open_firewall_port tcp 80
@@ -1041,7 +1020,7 @@ install_hy2() {
   say "  域名/SNI：$DOMAIN"
   say "  UDP 端口：$HPORT"
   if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
-  confirm_go '确认开始安装' || return 1
+  confirm_install '确认开始安装' || return 1
   step 1 4 '申请证书'
   issue_cert "$DOMAIN"
   open_firewall_port tcp 80
@@ -1079,7 +1058,7 @@ install_ss() {
   say '  协议：Shadowsocks 2022'
   say "  端口：$port (TCP+UDP)"
   say "  地址：$address"
-  confirm_go '确认开始安装' || return 1
+  confirm_install '确认开始安装' || return 1
   step 1 2 '生成配置'
   pass=$(openssl rand 16 | base64 | tr -d '\n')
   jq --argjson port "$port" --arg pass "$pass" --arg address "$address" \
