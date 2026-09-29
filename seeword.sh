@@ -2,15 +2,15 @@
 set -Eeuo pipefail
 umask 077
 
-ROOT=/etc/xray-manager
+ROOT=/etc/seeword
 STATE=$ROOT/state.json
 XRAY_BIN=/usr/local/bin/xray
 XRAY_CONF=/etc/xray/config.json
 XRAY_ASSETS=/usr/local/share/xray
 OPENLIST_DIR=/opt/openlist
-NGINX_CONF=/etc/nginx/conf.d/xray-manager.conf
-ACME_TMP_CONF=/etc/nginx/conf.d/xray-manager-acme.conf
-ACME_WEBROOT=/var/www/xray-manager
+NGINX_CONF=/etc/nginx/conf.d/seeword.conf
+ACME_TMP_CONF=/etc/nginx/conf.d/seeword-acme.conf
+ACME_WEBROOT=/var/www/seeword
 CERT_ROOT=/etc/nginx/zs
 ACME=/root/.acme.sh/acme.sh
 SELF=/usr/local/bin/seeword
@@ -18,7 +18,7 @@ LEGACY_SELF=/usr/local/bin/xray-manager
 TMP_DIR=
 INIT=
 PKG=
-LOG_FILE=/var/log/xray-manager.log
+LOG_FILE=/var/log/seeword.log
 
 step() { printf '\n== [%s/%s] %s ==\n' "$1" "$2" "$3"; }
 
@@ -30,8 +30,8 @@ confirm_go() {
 
 take_lock() {
   command -v flock >/dev/null 2>&1 || err '缺少 flock 工具。'
-  exec 200>/run/xray-manager.lock 2>/dev/null || err '无法创建锁文件 /run/xray-manager.lock。'
-  flock -n 200 || err '另一个 xray-manager 正在运行，请稍后再试。'
+  exec 200>/run/seeword.lock 2>/dev/null || err '无法创建锁文件 /run/seeword.lock。'
+  flock -n 200 || err '另一个 seeword 正在运行，请稍后再试。'
 }
 
 setup_logging() {
@@ -325,11 +325,11 @@ install_xray_core() {
   install -m 644 "$TMP_DIR/xray-new/geoip.dat" "$XRAY_ASSETS/geoip.dat"
   install -m 644 "$TMP_DIR/xray-new/geosite.dat" "$XRAY_ASSETS/geosite.dat"
   if [[ -f $XRAY_CONF ]]; then
-    if ! restart_or_start xray-manager; then
+    if ! restart_or_start seeword; then
       [[ ! -f $TMP_DIR/xray-old ]] || install -m 755 "$TMP_DIR/xray-old" "$XRAY_BIN"
       [[ ! -f $TMP_DIR/geoip-old ]] || install -m 644 "$TMP_DIR/geoip-old" "$XRAY_ASSETS/geoip.dat"
       [[ ! -f $TMP_DIR/geosite-old ]] || install -m 644 "$TMP_DIR/geosite-old" "$XRAY_ASSETS/geosite.dat"
-      restart_or_start xray-manager || true
+      restart_or_start seeword || true
       err 'Xray 更新后启动失败，已恢复旧内核。'
     fi
   fi
@@ -338,7 +338,7 @@ install_xray_core() {
 
 install_xray_service() {
   if [[ $INIT == systemd ]]; then
-    cat > /etc/systemd/system/xray-manager.service <<EOF
+    cat > /etc/systemd/system/seeword.service <<EOF
 [Unit]
 Description=Personal Xray manager service
 After=network-online.target
@@ -357,20 +357,20 @@ WantedBy=multi-user.target
 EOF
     # Use a dedicated unit name to avoid replacing an existing Xray installation.
     systemctl daemon-reload
-    systemctl enable xray-manager >/dev/null
+    systemctl enable seeword >/dev/null
   else
-    cat > /etc/init.d/xray-manager <<EOF
+    cat > /etc/init.d/seeword <<EOF
 #!/sbin/openrc-run
 name="Personal Xray"
 command="$XRAY_BIN"
 command_args="run -c $XRAY_CONF"
 command_background=true
-pidfile="/run/xray-manager.pid"
+pidfile="/run/seeword.pid"
 export XRAY_LOCATION_ASSET="$XRAY_ASSETS"
 depend() { need net; }
 EOF
-    chmod 755 /etc/init.d/xray-manager
-    rc-update add xray-manager default >/dev/null
+    chmod 755 /etc/init.d/seeword
+    rc-update add seeword default >/dev/null
   fi
 }
 
@@ -419,10 +419,10 @@ commit_state() {
   install -m 600 "$new_state" "$STATE"
   install -m 600 "$TMP_DIR/config-new" "$XRAY_CONF"
   install_xray_service
-  if ! restart_or_start xray-manager; then
+  if ! restart_or_start seeword; then
     install -m 600 "$state_bak" "$STATE"
     if [[ -f $conf_bak ]]; then install -m 600 "$conf_bak" "$XRAY_CONF"; else rm -f "$XRAY_CONF"; fi
-    restart_or_start xray-manager || true
+    restart_or_start seeword || true
     rollback_nginx
     err 'Xray 启动失败，已恢复原有配置。'
   fi
@@ -940,7 +940,7 @@ write_nginx() {
     [[ -n $d ]] || continue
     [[ $(cert_method "$d") == http ]] || continue
     cat >> "$NGINX_CONF" <<EOF
-# Managed by xray-manager. Custom changes will be overwritten.
+# Managed by seeword. Custom changes will be overwritten.
 server {
     listen 80;
     $ipv6_http
@@ -978,8 +978,46 @@ public_address() {
   printf '%s' "$ip"
 }
 
+# 旧版 xray-manager 路径迁移到 seeword（2026-09-29 改名）
+# 已安装旧版的系统首次运行时自动迁移：状态目录、服务名、Nginx 配置等
+migrate_legacy_paths() {
+  local old_root=/etc/xray-manager
+  # 状态目录（含 state.json 和证书）：/etc/xray-manager → /etc/seeword
+  if [[ -d $old_root && ! -d $ROOT ]]; then
+    mv "$old_root" "$ROOT" 2>/dev/null || return 0
+    say '已迁移旧版数据目录 /etc/xray-manager → /etc/seeword'
+  fi
+  [[ -d $old_root ]] || return 0
+  # systemd 服务：xray-manager.service → seeword.service
+  if [[ -f /etc/systemd/system/xray-manager.service && ! -f /etc/systemd/system/seeword.service ]]; then
+    systemctl stop xray-manager 2>/dev/null || true
+    systemctl disable xray-manager 2>/dev/null || true
+    mv /etc/systemd/system/xray-manager.service /etc/systemd/system/seeword.service
+    systemctl daemon-reload 2>/dev/null || true
+    systemctl enable seeword 2>/dev/null || true
+    say '已迁移系统服务 xray-manager → seeword'
+  fi
+  # init.d 脚本
+  if [[ -f /etc/init.d/xray-manager && ! -f /etc/init.d/seeword ]]; then
+    sed 's/xray-manager/seeword/g' /etc/init.d/xray-manager > /etc/init.d/seeword
+    chmod 755 /etc/init.d/seeword
+    rm -f /etc/init.d/xray-manager
+  fi
+  # Nginx 站点配置
+  [[ -f /etc/nginx/conf.d/xray-manager.conf ]] && mv /etc/nginx/conf.d/xray-manager.conf "$NGINX_CONF" 2>/dev/null || true
+  [[ -f /etc/nginx/conf.d/xray-manager-acme.conf ]] && mv /etc/nginx/conf.d/xray-manager-acme.conf "$ACME_TMP_CONF" 2>/dev/null || true
+  # ACME webroot
+  [[ -d /var/www/xray-manager && ! -d $ACME_WEBROOT ]] && mv /var/www/xray-manager "$ACME_WEBROOT" 2>/dev/null || true
+  # 日志文件
+  [[ -f /var/log/xray-manager.log && ! -f $LOG_FILE ]] && mv /var/log/xray-manager.log "$LOG_FILE" 2>/dev/null || true
+  # BBR 配置
+  [[ -f /etc/sysctl.d/99-xray-manager-bbr.conf ]] && mv /etc/sysctl.d/99-xray-manager-bbr.conf /etc/sysctl.d/99-seeword-bbr.conf 2>/dev/null || true
+  # 清理旧目录残留
+  rmdir "$old_root" 2>/dev/null || true
+}
 install_common() {
   require_root; detect_env
+  migrate_legacy_paths
   [[ ! -f $XRAY_CONF || -f $STATE ]] || err '检测到已有非本脚本管理的 Xray 配置，停止以避免覆盖。'
   [[ ! -x $XRAY_BIN || -f $ROOT/core-owned ]] || err '检测到已有非本脚本管理的 Xray 内核，停止以避免覆盖。'
   ensure_deps
@@ -1193,7 +1231,7 @@ show_status() {
   detect_env
   say '\n服务状态：'
   local name
-  for name in xray-manager openlist-manager nginx; do
+  for name in seeword openlist-manager nginx; do
     if svc_active "$name"; then say "$name：运行中"; else say "$name：未运行"; fi
   done
   if [[ -x $XRAY_BIN ]]; then "$XRAY_BIN" version | sed -n '1p'; fi
@@ -1201,7 +1239,7 @@ show_status() {
 reload_services() {
   require_root; detect_env
   if svc_active nginx; then nginx -t && svc reload nginx; fi
-  if svc_active xray-manager; then svc restart xray-manager; fi
+  if svc_active seeword; then svc restart seeword; fi
 }
 update_core() {
   require_root; detect_env; ensure_deps
@@ -1233,7 +1271,7 @@ doctor() {
       t_ok 'Xray 配置验证通过'
     else t_fail 'Xray 配置验证失败'; fi
   else t_fail 'Xray 配置文件缺失'; fi
-  if svc_active xray-manager; then t_ok 'xray-manager 服务运行中'; else t_fail 'xray-manager 服务未运行'; fi
+  if svc_active seeword; then t_ok 'seeword 服务运行中'; else t_fail 'seeword 服务未运行'; fi
   if [[ -x $OPENLIST_DIR/openlist ]]; then
     if svc_active openlist-manager; then t_ok 'openlist-manager 服务运行中'; else t_fail 'openlist-manager 服务未运行'; fi
   fi
@@ -1274,13 +1312,13 @@ doctor() {
 backup() {
   require_root; detect_env
   [[ -f $STATE ]] || err '尚未安装。'
-  local dest=${1:-/root/xray-manager-backup-$(date +%Y%m%d-%H%M%S).tar.gz}
+  local dest=${1:-/root/seeword-backup-$(date +%Y%m%d-%H%M%S).tar.gz}
   init_tmp
   local list=$TMP_DIR/filelist f
   : > "$list"
   for f in "$ROOT" "$XRAY_CONF" "$NGINX_CONF" "$CERT_ROOT" \
-      /etc/systemd/system/xray-manager.service /etc/systemd/system/openlist-manager.service \
-      /etc/init.d/xray-manager /etc/init.d/openlist-manager; do
+      /etc/systemd/system/seeword.service /etc/systemd/system/openlist-manager.service \
+      /etc/init.d/seeword /etc/init.d/openlist-manager; do
     [[ -e $f ]] || continue
     printf '%s\n' "$f" >> "$list"
   done
@@ -1314,7 +1352,7 @@ restore() {
   if command -v nginx >/dev/null 2>&1 && [[ -f $NGINX_CONF ]]; then
     nginx -t >/dev/null 2>&1 || err '恢复的 Nginx 配置验证失败。'
   fi
-  restart_or_start xray-manager || err 'Xray 启动失败。'
+  restart_or_start seeword || err 'Xray 启动失败。'
   if [[ -f $NGINX_CONF ]]; then restart_or_start nginx || true; fi
   if [[ -x $OPENLIST_DIR/openlist ]]; then restart_or_start openlist-manager || true; fi
   say '恢复完成。'
@@ -1337,7 +1375,7 @@ traffic() {
   load_state
   local out name value email dir uuid remark up down
   out=$("$XRAY_BIN" api statsquery --server=127.0.0.1:10085 -pattern '>>>' 2>/dev/null) \
-    || err 'Xray API 不可用，请确认 xray-manager 服务运行中。'
+    || err 'Xray API 不可用，请确认 seeword 服务运行中。'
   declare -A TUPS TDOWNS
   while IFS=$'\t' read -r name value; do
     [[ $name == user\>\>\>* ]] || [[ $name == inbound\>\>\>* ]] || continue
@@ -1451,7 +1489,7 @@ enable_bbr() {
     err "内核版本 $(uname -r) 过低，BBR 需要 4.9+。"
   fi
   modprobe tcp_bbr 2>/dev/null || true
-  cat > /etc/sysctl.d/99-xray-manager-bbr.conf <<EOF
+  cat > /etc/sysctl.d/99-seeword-bbr.conf <<EOF
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 EOF
@@ -1514,7 +1552,7 @@ uninstall_protocol() {
       if ! write_nginx "$STATE"; then
         install -m 600 "$TMP_DIR/state-old" "$STATE"
         if [[ -f $TMP_DIR/config-old ]]; then install -m 600 "$TMP_DIR/config-old" "$XRAY_CONF"; fi
-        restart_or_start xray-manager || true
+        restart_or_start seeword || true
         err 'Nginx 配置更新失败，已恢复原有 Xray 配置。'
       fi
       # 该域名若无其他协议使用，删除其证书
@@ -1526,8 +1564,8 @@ uninstall_protocol() {
     fi
     say "$label 已卸载；其他协议配置保留。"
   else
-    svc stop xray-manager || err 'Xray 停止失败，原配置未修改。'
-    svc disable xray-manager >/dev/null 2>&1 || true
+    svc stop seeword || err 'Xray 停止失败，原配置未修改。'
+    svc disable seeword >/dev/null 2>&1 || true
     install -m 600 "$TMP_DIR/state-new" "$STATE"
     rm -f -- "$XRAY_CONF"
     remove_web_stack
@@ -1541,15 +1579,15 @@ uninstall_all() {
   read -r -p '将彻底删除 Xray、Nginx（含软件包与配置）、OpenList、acme.sh、全部证书、配置与账号数据。输入 DELETE 确认：' confirm
   [[ $confirm == DELETE ]] || { say '已取消。'; return; }
   init_tmp
-  for service in xray-manager openlist-manager nginx; do
+  for service in seeword openlist-manager nginx; do
     svc stop "$service" >/dev/null 2>&1 || true
     svc disable "$service" >/dev/null 2>&1 || true
   done
   if [[ $INIT == systemd ]]; then
-    rm -f /etc/systemd/system/xray-manager.service /etc/systemd/system/openlist-manager.service
+    rm -f /etc/systemd/system/seeword.service /etc/systemd/system/openlist-manager.service
     systemctl daemon-reload
   else
-    rm -f /etc/init.d/xray-manager /etc/init.d/openlist-manager
+    rm -f /etc/init.d/seeword /etc/init.d/openlist-manager
   fi
   remove_web_stack
   # OpenList 是独立组件，全卸载时显式清理

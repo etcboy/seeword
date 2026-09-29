@@ -89,12 +89,12 @@ sudo seeword uninstall-openlist   # 只卸载 OpenList
 | 内容 | 路径 |
 | ---- | ---- |
 | Xray 配置 | `/etc/xray/config.json` |
-| 管理状态与凭据（仅 root 可读） | `/etc/xray-manager/state.json` |
+| 管理状态与凭据（仅 root 可读） | `/etc/seeword/state.json` |
 | 证书（按完整域名存放） | `/etc/nginx/zs/<完整域名>/` |
-| Nginx 站点 | `/etc/nginx/conf.d/xray-manager.conf` |
+| Nginx 站点 | `/etc/nginx/conf.d/seeword.conf` |
 | OpenList 数据 | `/opt/openlist/` |
 | Xray 地理数据 | `/usr/local/share/xray/` |
-| 运行日志 | `/var/log/xray-manager.log` |
+| 运行日志 | `/var/log/seeword.log` |
 
 例如 `a.bc.de` 的证书在 `/etc/nginx/zs/a.bc.de/`，该目录下的 `method` 文件记录其验证方式。
 
