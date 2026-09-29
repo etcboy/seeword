@@ -17,6 +17,8 @@ fi
 
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
+# 加时间戳避免 CDN 缓存旧版本
+SRC="$SRC?t=$(date +%s)"
 if command -v curl >/dev/null 2>&1; then
   curl -fsSL --retry 3 "$SRC" -o "$tmp"
 elif command -v wget >/dev/null 2>&1; then

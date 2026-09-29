@@ -1674,6 +1674,8 @@ EOF
 ensure_latest_script() {
   local cmd=$1 tmp
   local src=${SEEWORLD_URL:-https://raw.githubusercontent.com/etcboy/seeword/main/seeword.sh}
+  # 加时间戳避免 CDN 缓存旧版本
+  src="$src?t=$(date +%s)"
   tmp=$(mktemp) || return 0
   trap 'rm -f "$tmp"' RETURN
   if command -v curl >/dev/null 2>&1; then
