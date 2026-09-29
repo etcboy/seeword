@@ -219,10 +219,12 @@ EOF
 fixenv() {
   require_root; detect_env
   say '== 检查外网连通性 =='
-  if timeout 8 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null; then
+  # 双栈检测：IPv4 和 IPv6 任一通即可（纯 IPv6 服务器无 IPv4 路由）
+  if timeout 8 bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
+     timeout 8 bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
     say '外网连通正常。'
   else
-    err '无法连接外网（1.1.1.1:443），请先检查服务器网络后再试。'
+    err '无法连接外网（1.1.1.1:443 / [2606:4700:4700::1111]:443），请先检查服务器网络后再试。'
   fi
   say '== 检查 DNS 解析 =='
   if timeout 8 bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
@@ -230,9 +232,9 @@ fixenv() {
   elif [[ -L /etc/resolv.conf ]]; then
     err 'DNS 解析失败，且 /etc/resolv.conf 由其他程序管理，请手动检查 DNS 配置。'
   else
-    say 'DNS 解析失败，尝试写入公共 DNS（1.1.1.1 / 8.8.8.8）。'
+    say 'DNS 解析失败，尝试写入公共 DNS（IPv4 + IPv6 双栈）。'
     [[ -f /etc/resolv.conf ]] && cp -a /etc/resolv.conf /etc/resolv.conf.bak
-    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+    printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\nnameserver 2001:4860:4860::8888\n' > /etc/resolv.conf
     timeout 8 bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
     say 'DNS 已修复（原文件已备份为 /etc/resolv.conf.bak）。'
   fi
