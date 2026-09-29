@@ -646,17 +646,24 @@ issue_cert() {
     return
   fi
   install_acme
-  # 优先 TCP 80 验证；80 被占用时自动改用 DNS 验证
+  # 优先 TCP 80 验证；80 被占用时自动改用 DNS 验证；HTTP 失败时询问是否切 DNS
   if http80_usable; then
     CERT_METHOD=http
     say 'TCP 80 可用，使用 HTTP 验证申请证书。'
     ensure_http_challenge "$domain"
     if ! "$ACME" --issue --server letsencrypt --webroot "$ACME_WEBROOT" -d "$domain" --keylength ec-256; then
-      err 'HTTP 80 证书申请失败：请确认域名已解析到本机（纯 IPv6 环境需要 AAAA 记录），且 TCP 80 已放行（含 IPv6 防火墙）。'
+      say 'HTTP 80 证书申请失败：可能域名未解析到本机，或 TCP 80 未放行（含云安全组、IPv6 防火墙）。'
+      if confirm_go '是否改用 Cloudflare DNS API 验证'; then
+        CERT_METHOD=dns
+      else
+        err '已取消证书申请。'
+      fi
     fi
   else
     CERT_METHOD=dns
     say 'TCP 80 被占用，改用 Cloudflare DNS API 验证申请证书。'
+  fi
+  if [[ $CERT_METHOD == dns ]]; then
     read -r -s -p 'Cloudflare DNS API Token：' token; printf '\n'
     [[ -n $token ]] || err 'Token 不能为空。'
     read -r -p 'Cloudflare Zone ID（可留空自动查找）：' zone
