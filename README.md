@@ -18,8 +18,8 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 
 - 需要 root 权限；安装完成后自动进入菜单。
 - 主程序位于 `/usr/local/bin/seeword`，之后运行 `sudo seeword` 即可打开菜单。
+- 快捷命令：安装时会自动创建 `/usr/local/bin/sw`（指向 seeword），`sudo sw` 与 `sudo seeword` 完全等价，root 用户下直接 `sw` 即可。
 - 也支持子命令直达，例如 `sudo seeword reality`（或简写 `sudo sw reality`）。
-- 安装时会自动创建 `sw` 快捷方式，`sw` 与 `seeword` 完全等价。
 - 装好后若依赖缺失，运行 `sudo seeword fixenv` 修复环境，再运行 `sudo seeword deps` 安装全部依赖。
 
 ## 安装前准备
@@ -58,8 +58,8 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 ### 常用子命令
 
 ```bash
-sudo seeword menu                 # 打开菜单
-sudo seeword reality              # 一键安装 Reality
+sudo seeword menu                 # 打开菜单（简写：sudo sw menu）
+sudo seeword reality              # 一键安装 Reality（简写：sudo sw reality）
 sudo seeword hy2                  # 一键安装 HY2
 sudo seeword ss                   # 一键安装 SS2022
 sudo seeword openlist             # 单独安装 OpenList（SNI 伪装，可选）
