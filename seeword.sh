@@ -244,21 +244,21 @@ EOF
   DEBIAN_FRONTEND=noninteractive apt-get update || err 'apt update 失败，请检查网络。'
 }
 # 修复极精简系统的软件源/DNS/网络环境，使依赖能够安装
+# 带超时的命令包装：timeout 存在时加 8 秒超时，否则直接执行
+# （bash < 4.4 下空数组 "${arr[@]}" 配 set -u 会报 unbound variable，故用函数而非数组）
+_to() { if command -v timeout >/dev/null 2>&1; then timeout 8 "$@"; else "$@"; fi; }
 fixenv() {
   require_root; detect_env
   say '== 检查外网连通性 =='
   # 双栈检测：IPv4 和 IPv6 任一通即可（纯 IPv6 服务器无 IPv4 路由）
-  # timeout 可能不存在（极简系统），用数组决定是否加超时
-  local -a _to=()
-  command -v timeout >/dev/null 2>&1 && _to=(timeout 8)
-  if "${_to[@]}" bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
-     "${_to[@]}" bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
+  if _to bash -c '</dev/tcp/1.1.1.1/443' 2>/dev/null || \
+     _to bash -c '</dev/tcp/2606:4700:4700::1111/443' 2>/dev/null; then
     say '外网连通正常。'
   else
     err '无法连接外网（1.1.1.1:443 / [2606:4700:4700::1111]:443），请先检查服务器网络后再试。'
   fi
   say '== 检查 DNS 解析 =='
-  if "${_to[@]}" bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
+  if _to bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null; then
     say 'DNS 解析正常。'
   elif [[ -L /etc/resolv.conf ]]; then
     err 'DNS 解析失败，且 /etc/resolv.conf 由其他程序管理，请手动检查 DNS 配置。'
@@ -266,7 +266,7 @@ fixenv() {
     say 'DNS 解析失败，尝试写入公共 DNS（IPv4 + IPv6 双栈）。'
     [[ -f /etc/resolv.conf ]] && cp -a /etc/resolv.conf /etc/resolv.conf.bak
     printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 2606:4700:4700::1111\nnameserver 2001:4860:4860::8888\n' > /etc/resolv.conf
-    "${_to[@]}" bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
+    _to bash -c '</dev/tcp/deb.debian.org/443' 2>/dev/null || err 'DNS 仍不可用，请手动排查。'
     say 'DNS 已修复（原文件已备份为 /etc/resolv.conf.bak）。'
   fi
   say '== 检查软件源 =='
@@ -1061,13 +1061,15 @@ EOF
   if [[ -n $web_domain && ( -z $r_domain || $r_port != 443 ) ]]; then
     nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$web_domain" "$(cert_dir "$web_domain")"
   fi
-  # OpenList 独立域名：未被上面覆盖时单独建 443 站点（反代到 OpenList）
-  # 注意：Reality 占用 443/tcp 时 Nginx 无法监听 443，此时跳过建站（由调用方提示用户）
+  # OpenList 独立域名：检查是否已被 443 站点覆盖，未覆盖且 443 空闲时建站
+  # （443 被 Reality 占用时无法建站，置 flag 由调用方明确提示用户）
   WRITE_NGINX_O443_SKIPPED=0
-  if [[ -n $o_domain && $o_domain != "$web_domain" && $o_domain != "$r_domain" ]]; then
-    if [[ -n $r_domain && $r_port == 443 ]]; then
+  if [[ -n $o_domain && $o_domain != "$r_domain" ]]; then
+    if [[ $o_domain == "$web_domain" && ( -z $r_domain || $r_port != 443 ) ]]; then
+      : # 已被主 443 块覆盖，无需重复建站
+    elif [[ -n $r_domain && $r_port == 443 ]]; then
       WRITE_NGINX_O443_SKIPPED=1
-    else
+    elif [[ $o_domain != "$web_domain" ]]; then
       nginx_server_block "$(printf '    listen 443 ssl;\n    %s' "$ipv6_https")" "$o_domain" "$(cert_dir "$o_domain")"
     fi
   fi
