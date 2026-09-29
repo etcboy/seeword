@@ -404,7 +404,7 @@ render_config() {
       (if $s.reality then [{tag:"reality",listen:$listen,port:$s.reality.port,protocol:"vless",
         settings:{clients:[$s.reality.users[] | {id:.uuid,flow:"xtls-rprx-vision",email:("reality:"+.uuid)}],decryption:"none"},
         streamSettings:{network:"tcp",security:"reality",
-          realitySettings:{target:"127.0.0.1:\($s.reality.fallback // 8443)",serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
+          realitySettings:{target:(if $s.reality.borrowed then "\($s.reality.domain):443" else "127.0.0.1:\($s.reality.fallback // 8443)" end),serverNames:[$s.reality.domain],privateKey:$s.reality.private,shortIds:[$s.reality.sid]}}}] else [] end)
       + (if $s.hy2 then [{tag:"hy2",listen:$listen,port:$s.hy2.port,protocol:"hysteria",
         settings:{version:2,clients:[{auth:$s.hy2.password,email:"hy2"}]},
         streamSettings:{network:"hysteria",security:"tls",
@@ -501,6 +501,29 @@ check_domain_dns() {
     confirm_go '仍要继续安装' || return 1
   fi
 }
+# Reality SNI 选择：大厂域名伪装（无需证书）或自有域名（需申请证书）
+# 设置 DOMAIN 和 BORROWED_SNI（1=借用大厂域名，0=自有域名）
+ask_reality_sni() {
+  local choice input
+  say '请选择 Reality 的 SNI 伪装方式：'
+  say '  1) 大厂域名伪装（推荐，无需申请证书）'
+  say '  2) 自有域名（需 DNS 解析到本机并申请证书）'
+  read -r -p '请选择 [1/2]（默认 1）: ' choice
+  choice=${choice:-1}
+  if [[ $choice == 2 ]]; then
+    BORROWED_SNI=0
+    ask_domain reality || return 1
+  else
+    BORROWED_SNI=1
+    read -r -p '请输入伪装域名（默认 www.icloud.com）: ' input
+    input=${input:-www.icloud.com}
+    input=${input,,}
+    valid_domain "$input" || err '域名格式不正确。'
+    DOMAIN=$input
+    say "将使用 $DOMAIN 作为 SNI 伪装，无需申请证书。"
+  fi
+}
+
 ask_domain() {
   local proto=$1 other_domain input prompt label
   if [[ $proto == reality ]]; then label='Reality'; else label='HY2'; fi
@@ -912,12 +935,14 @@ EOF
 }
 
 write_nginx() {
-  local state_file=$1 r_domain r_port r_fallback h_domain web_domain
+  local state_file=$1 r_domain r_port r_fallback h_domain web_domain r_borrowed
   r_domain=$(jq -r '.reality.domain // empty' "$state_file")
   r_port=$(jq -r '.reality.port // 443' "$state_file")
   r_fallback=$(jq -r '.reality.fallback // 8443' "$state_file")
+  r_borrowed=$(jq -r '.reality.borrowed // false' "$state_file")
   h_domain=$(jq -r '.hy2.domain // empty' "$state_file")
-  web_domain=${r_domain:-$h_domain}
+  # 借用大厂域名时 Reality 无本地证书，web 站点只用 HY2 的域名
+  if [[ $r_borrowed == true ]]; then web_domain=$h_domain; else web_domain=${r_domain:-$h_domain}; fi
   local backup= ipv6_http= ipv6_https= d dir
   if has_ipv6; then
     ipv6_http='listen [::]:80;'
@@ -936,7 +961,7 @@ write_nginx() {
     return 0
   fi
   : > "$NGINX_CONF"
-  # 每个 http 验证方式的域名都需要 80 验证块（证书续期用）
+  # 每个 http 验证方式的域名都需要 80 验证块（证书续期用；借用大厂域名的 Reality 无证书，排除）
   while IFS= read -r d; do
     [[ -n $d ]] || continue
     [[ $(cert_method "$d") == http ]] || continue
@@ -950,9 +975,10 @@ server {
     location / { return 301 https://\$host\$request_uri; }
 }
 EOF
-  done < <(jq -r '[.reality.domain, .hy2.domain] | map(select(. != null)) | unique | .[]' "$state_file")
+  done < <(jq -r '[if .reality.borrowed then null else .reality.domain end, .hy2.domain] | map(select(. != null)) | unique | .[]' "$state_file")
   # Reality 回落块（xray reality 的 target，127.0.0.1:回落端口；8443 被占用时自动顺延）
-  if [[ -n $r_domain ]]; then
+  # 借用大厂域名时回落直连真实站点，无需本地 Nginx 块
+  if [[ -n $r_domain && $r_borrowed != true ]]; then
     nginx_server_block "    listen 127.0.0.1:$r_fallback ssl;" "$r_domain" "$(cert_dir "$r_domain")"
   fi
   # 公网 443 Web 块：Reality 未占用 443/tcp 时提供
@@ -995,21 +1021,31 @@ install_reality() {
   install_common
   has_reality && err 'Reality 已安装。'
   ensure_web_deps
-  ask_domain reality || return 1
+  ask_reality_sni || return 1
   ask_reality_port
   local fallback_port
-  fallback_port=$(find_reality_fallback_port "$RPORT")
+  if [[ $BORROWED_SNI == 1 ]]; then
+    fallback_port=0
+  else
+    fallback_port=$(find_reality_fallback_port "$RPORT")
+  fi
   say ''
   say '即将安装：'
   say '  协议：Reality (VLESS + TCP)'
   say "  域名/SNI：$DOMAIN"
+  if [[ $BORROWED_SNI == 1 ]]; then
+    say '  伪装方式：大厂域名（无需证书，回落直连真实站点）'
+  else
+    say "  回落端口：127.0.0.1:$fallback_port（8443 被占用时自动顺延）"
+    if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
+  fi
   say "  TCP 端口：$RPORT"
-  say "  回落端口：127.0.0.1:$fallback_port（8443 被占用时自动顺延）"
-  if [[ -x $OPENLIST_DIR/openlist ]]; then say '  伪装站点：OpenList'; else say '  伪装站点：Nginx 默认页面（如需 OpenList 可在主菜单单独安装）'; fi
   confirm_install '确认开始安装' || return 1
-  step 1 4 '申请证书'
-  issue_cert "$DOMAIN"
-  open_firewall_port tcp 80
+  if [[ $BORROWED_SNI == 0 ]]; then
+    step 1 4 '申请证书'
+    issue_cert "$DOMAIN"
+    open_firewall_port tcp 80
+  fi
   open_firewall_port tcp "$RPORT"
   step 2 4 '生成 Reality 密钥与配置'
   local keypair private public sid uuid
@@ -1019,8 +1055,8 @@ install_reality() {
   [[ -n $private && -n $public ]] || err 'Xray 密钥生成失败。'
   uuid=$($XRAY_BIN uuid)
   sid=$(random_hex 8)
-  jq --arg d "$DOMAIN" --argjson port "$RPORT" --argjson fallback "$fallback_port" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
-    '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,fallback:$fallback,users:[{uuid:$id,remark:"默认"}]}' \
+  jq --arg d "$DOMAIN" --argjson port "$RPORT" --argjson fallback "$fallback_port" --argjson borrowed "$BORROWED_SNI" --arg id "$uuid" --arg priv "$private" --arg pub "$public" --arg sid "$sid" \
+    '.reality={uuid:$id,private:$priv,public:$pub,sid:$sid,domain:$d,port:$port,fallback:$fallback,borrowed:$borrowed,users:[{uuid:$id,remark:"默认"}]}' \
     "$STATE" > "$TMP_DIR/state-new"
   step 3 4 '写入 Nginx 与 Xray 配置'
   render_config "$TMP_DIR/state-new" "$TMP_DIR/check-config"
@@ -1158,10 +1194,12 @@ collect_links() {
   fi
 }
 
-# Web 界面（OpenList）使用的域名：优先 Reality 的
+# Web 界面（OpenList）使用的域名：优先 Reality 的（借用大厂域名的跳过，用 HY2 的）
 web_domain() {
-  local r h
+  local r h borrowed
+  borrowed=$(state_get '.reality.borrowed // false')
   r=$(state_get '.reality.domain'); h=$(state_get '.hy2.domain')
+  if [[ $borrowed == true ]]; then r=''; fi
   printf '%s' "${r:-$h}"
 }
 
