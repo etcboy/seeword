@@ -242,7 +242,15 @@ fixenv() {
     apt) DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates ;;
     *) pkg_install curl ca-certificates ;;
   esac
-  command -v curl >/dev/null 2>&1 || err 'curl 仍安装失败，请手动排查后重试。'
+  # curl 装不上时试 wget，两者至少要有一个
+  if ! command -v curl >/dev/null 2>&1; then
+    say 'curl 安装失败，尝试安装 wget…'
+    case $PKG in
+      apt) DEBIAN_FRONTEND=noninteractive apt-get install -y wget ca-certificates ;;
+      *) pkg_install wget ca-certificates ;;
+    esac
+  fi
+  { command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; } || err 'curl 和 wget 都安装失败，请手动排查后重试。'
   say '环境修复完成，接下来可运行 `seeword deps` 安装全部依赖。'
 }
 svc() {
