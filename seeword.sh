@@ -859,7 +859,9 @@ install_openlist_standalone() {
     { has_reality || has_hy2; } && has_web=1
   fi
   if [[ -z $domain ]]; then
-    read -r -p 'OpenList 访问域名（可留空，稍后在 OpenList 后台设置）：' domain
+    say '未检测到 Web 域名（如 Reality 使用大厂域名伪装）。'
+    say '如有自有域名并想通过 HTTPS 访问 OpenList，请输入；没有则直接回车，装完后通过 http://服务器IP:5244 访问。'
+    read -r -p 'OpenList 访问域名（可留空）：' domain
     if [[ -n $domain ]]; then
       domain=${domain,,}
       valid_domain "$domain" || err '域名格式不正确。'
