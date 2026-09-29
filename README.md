@@ -7,13 +7,13 @@
 常规系统（有 curl）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sudo bash
 ```
 
 极精简系统（无 curl，用 wget）：
 
 ```bash
-wget -qO- https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
+wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sudo bash
 ```
 
 - 需要 root 权限；安装完成后自动进入菜单。

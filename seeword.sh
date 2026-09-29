@@ -1690,7 +1690,7 @@ EOF
 # 有更新则替换自身并重新执行相同命令（旧版本备份为 seeword.bak）
 ensure_latest_script() {
   local cmd=$1 tmp
-  local src=${SEEWORLD_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/seeword.sh}
+  local src=${SEEWORLD_URL:-https://raw.githubusercontent.com/etcboy/seeword/main/seeword.sh}
   tmp=$(mktemp) || return 0
   trap 'rm -f "$tmp"' RETURN
   if command -v curl >/dev/null 2>&1; then

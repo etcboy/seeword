@@ -2,11 +2,11 @@
 # seeword 一键安装器：下载主脚本到 /usr/local/bin/seeword 并启动。
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/xhtus/seeword/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sudo bash
 set -Eeuo pipefail
 umask 077
 
-SRC=${XRAY_MANAGER_URL:-https://raw.githubusercontent.com/xhtus/seeword/main/seeword.sh}
+SRC=${XRAY_MANAGER_URL:-https://raw.githubusercontent.com/etcboy/seeword/main/seeword.sh}
 TARGET=${XRAY_MANAGER_TARGET:-/usr/local/bin/seeword}
 LEGACY_TARGET=/usr/local/bin/xray-manager
 
