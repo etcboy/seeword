@@ -1421,93 +1421,6 @@ doctor() {
   if (( fail == 0 )); then say '体检通过：一切正常。'; else err '体检发现问题，请按上面 [FAIL] 项排查。'; fi
 }
 
-# 备份：状态、配置、Nginx 站点、证书、OpenList 数据
-backup() {
-  require_root; detect_env
-  [[ -f $STATE ]] || err '尚未安装。'
-  local dest=${1:-/root/seeword-backup-$(date +%Y%m%d-%H%M%S).tar.gz}
-  init_tmp
-  local list=$TMP_DIR/filelist f
-  : > "$list"
-  for f in "$ROOT" "$XRAY_CONF" "$NGINX_CONF" "$CERT_ROOT" \
-      /etc/systemd/system/seeword.service /etc/systemd/system/openlist.service \
-      /etc/init.d/seeword /etc/init.d/openlist; do
-    [[ -e $f ]] || continue
-    printf '%s\n' "$f" >> "$list"
-  done
-  if [[ -f $ROOT/openlist-owned && -d $OPENLIST_DIR ]]; then printf '%s\n' "$OPENLIST_DIR" >> "$list"; fi
-  tar -czPf "$dest" -T "$list" || err '备份打包失败。'
-  chmod 600 "$dest"
-  say "备份已保存到：$dest"
-  say '注意：备份不含 Xray 内核二进制，恢复后如缺失可用 update 命令重装。'
-}
-
-# 恢复：解包备份并重启服务
-restore() {
-  require_root; detect_env
-  local src=${1:-}
-  [[ -n $src ]] || err '用法：seeword restore <备份文件>'
-  [[ -f $src ]] || err "备份文件不存在：$src"
-  local confirm
-  read -r -p '恢复将覆盖现有配置并重启服务，输入 YES 确认：' confirm
-  [[ $confirm == YES ]] || { say '已取消。'; return; }
-  init_tmp
-  local extract_dir=$TMP_DIR/restore
-  install -d -m 700 "$extract_dir"
-  tar -tzPf "$src" >/dev/null 2>&1 || err '备份文件损坏或格式不正确。'
-  # 白名单校验：只允许备份包包含本脚本管理的路径
-  local allowed_paths=(
-    "$ROOT" "$XRAY_CONF" "$NGINX_CONF" "$CERT_ROOT"
-    /etc/systemd/system/seeword.service /etc/systemd/system/openlist.service
-    /etc/init.d/seeword /etc/init.d/openlist
-    "$OPENLIST_DIR"
-  )
-  local entry allowed=0 ap
-  while IFS= read -r entry; do
-    [[ -n $entry ]] || continue
-    # 拒绝相对路径、.. 和非绝对路径
-    [[ $entry == /* ]] || err "备份包含非法路径（非绝对路径）：$entry"
-    [[ $entry != *".."* ]] || err "备份包含非法路径：$entry"
-    allowed=0
-    for ap in "${allowed_paths[@]}"; do
-      if [[ $entry == "$ap" || $entry == "$ap"/* ]]; then allowed=1; break; fi
-    done
-    (( allowed )) || err "备份包含未授权的路径：$entry，已中止恢复。"
-  done < <(tar -tzPf "$src" 2>/dev/null)
-  tar -xzPf "$src" -C "$extract_dir" || err '恢复解包失败。'
-  # 校验通过后复制到系统路径
-  local src_path dest_path
-  while IFS= read -r entry; do
-    [[ -n $entry ]] || continue
-    src_path="$extract_dir$entry"
-    dest_path="$entry"
-    [[ -e $src_path ]] || continue
-    if [[ -d $src_path ]]; then
-      install -d -m 700 "$(dirname "$dest_path")"
-      # -T：目标已存在时直接覆盖其内容，避免套娃成 dest/src_basename
-      cp -aT "$src_path" "$dest_path"
-    else
-      install -d -m 755 "$(dirname "$dest_path")"
-      cp -a "$src_path" "$dest_path"
-    fi
-  done < <(tar -tzPf "$src" 2>/dev/null)
-  [[ -f $STATE ]] || err '备份中没有状态文件，恢复中止。'
-  install_xray_service
-  if [[ -x $OPENLIST_DIR/openlist ]]; then install_openlist_service; fi
-  if [[ $INIT == systemd ]]; then systemctl daemon-reload; fi
-  if [[ -f $XRAY_CONF ]]; then
-    [[ -x $XRAY_BIN ]] || err 'Xray 内核缺失，请先用 update 命令安装后再恢复。'
-    "$XRAY_BIN" run -test -config "$XRAY_CONF" >/dev/null 2>&1 || err '恢复的 Xray 配置验证失败。'
-  fi
-  if command -v nginx >/dev/null 2>&1 && [[ -f $NGINX_CONF ]]; then
-    nginx -t >/dev/null 2>&1 || err '恢复的 Nginx 配置验证失败。'
-  fi
-  restart_or_start seeword || err 'Xray 启动失败。'
-  if [[ -f $NGINX_CONF ]]; then restart_or_start nginx || true; fi
-  if [[ -x $OPENLIST_DIR/openlist ]]; then restart_or_start openlist || true; fi
-  say '恢复完成。'
-}
-
 human_bytes() {
   local b=${1:-0}
   (( b < 0 )) && b=0
@@ -1662,6 +1575,130 @@ remove_cert() {
 }
 # 移除整个 Web 栈：Nginx 站点、全部本脚本管理的证书
 # OpenList 已是独立组件，不再随 Web 栈移除（由 uninstall_openlist / uninstall_all 处理）
+# 证书管理：查询/续期/删除
+# 列出 $CERT_ROOT 下所有本脚本管理的证书目录
+cert_dirs() {
+  local d
+  [[ -d $CERT_ROOT ]] || return 0
+  for d in "$CERT_ROOT"/*; do
+    [[ -d $d && -f $d/domain.txt ]] || continue
+    basename "$d"
+  done
+}
+
+# 查询证书：显示域名、到期时间、是否自动续期
+cert_list() {
+  require_root
+  local dom dir exp auto acme_dir cron_on
+  local -a doms
+  mapfile -t doms < <(cert_dirs)
+  [[ ${#doms[@]} -gt 0 ]] || { say '暂无本脚本管理的证书。'; return; }
+  say '已安装的证书：'
+  for dom in "${doms[@]}"; do
+    dir=$(cert_dir "$dom")
+    if [[ -f $dir/fullchain.pem ]]; then
+      exp=$(openssl x509 -noout -enddate -in "$dir/fullchain.pem" 2>/dev/null | cut -d= -f2)
+      [[ -n $exp ]] || exp='未知'
+    else
+      exp='证书文件缺失'
+    fi
+    # 自动续期：acme.sh 接管该域名且 cron 任务存在
+    auto='否'
+    acme_dir="${ACME%/*}/${dom}_ecc"
+    if [[ -d $acme_dir ]]; then
+      cron_on=$(crontab -l 2>/dev/null | grep -c 'acme.sh.*--cron' || true)
+      [[ $cron_on -gt 0 ]] && auto='是'
+    fi
+    say "  $dom"
+    say "    到期时间：$exp"
+    say "    自动续期：$auto"
+  done
+}
+
+# 选择一个证书（交互），选中则 echo 域名
+cert_select() {
+  local -a doms
+  mapfile -t doms < <(cert_dirs)
+  [[ ${#doms[@]} -gt 0 ]] || { say '暂无本脚本管理的证书。'; return 1; }
+  local i dom choice
+  say '请选择证书：'
+  for i in "${!doms[@]}"; do
+    say "  $((i+1)). ${doms[$i]}"
+  done
+  read -r -p '请输入编号：' choice
+  [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#doms[@]} )) || { say '编号无效。'; return 1; }
+  dom=${doms[$((choice-1))]}
+  printf '%s\n' "$dom"
+}
+
+# 续期证书：手动触发 acme.sh 续期并重新安装到证书目录
+cert_renew() {
+  require_root
+  local dom dir
+  dom=${1:-}
+  [[ -n $dom ]] || dom=$(cert_select) || return
+  dir=$(cert_dir "$dom")
+  [[ -f $dir/domain.txt ]] || err "证书 $dom 不存在。"
+  [[ -x $ACME ]] || err 'acme.sh 未安装。'
+  say "正在为 $dom 申请续期…"
+  if ! "$ACME" --renew -d "$dom" --ecc --force; then
+    err "证书 $dom 续期失败，请检查网络/DNS/验证方式。"
+  fi
+  "$ACME" --install-cert -d "$dom" --ecc \
+    --key-file "$dir/privkey.pem" \
+    --fullchain-file "$dir/fullchain.pem" \
+    --reloadcmd "$SELF reload" || err '证书安装失败。'
+  chmod 600 "$dir/privkey.pem"
+  chmod 644 "$dir/fullchain.pem"
+  say "证书 $dom 续期成功。"
+}
+
+# 删除证书：检查是否被协议使用
+cert_delete() {
+  require_root
+  local dom dir used confirm
+  dom=${1:-}
+  [[ -n $dom ]] || dom=$(cert_select) || return
+  dir=$(cert_dir "$dom")
+  [[ -f $dir/domain.txt ]] || err "证书 $dom 不存在。"
+  # 检查是否被 Reality/HY2/OpenList 使用
+  used=$(jq -r --arg d "$dom" \
+    '[.reality.domain,.hy2.domain,.openlist.domain] | map(select(. != null)) | any(. == $d)' "$STATE" 2>/dev/null)
+  if [[ $used == true ]]; then
+    say "警告：证书 $dom 正被协议使用，删除后相关协议将无法启动。"
+    read -r -p '仍要删除吗？输入 YES 确认：' confirm
+    [[ $confirm == YES ]] || { say '已取消。'; return; }
+  else
+    read -r -p "将删除证书 $dom，输入 YES 确认：" confirm
+    [[ $confirm == YES ]] || { say '已取消。'; return; }
+  fi
+  remove_cert "$dom"
+  say "证书 $dom 已删除。"
+}
+
+# 证书管理子菜单
+cert_menu() {
+  local choice
+  while true; do
+    cat <<'EOF'
+
+===== 证书管理 =====
+1. 查询证书
+2. 续期证书
+3. 删除证书
+0. 返回上级
+EOF
+    read -r -p '请选择：' choice
+    case "$choice" in
+      1) cert_list ;;
+      2) guarded cert_renew ;;
+      3) guarded cert_delete ;;
+      0) return ;;
+      *) say '无效选项。' ;;
+    esac
+  done
+}
+
 remove_web_stack() {
   local d dom
   if [[ -f $NGINX_CONF ]]; then
@@ -1855,7 +1892,7 @@ cmd_open_ports() {
   fi
 }
 tools_menu() {
-  local choice src
+  local choice
   while true; do
     cat <<'EOF'
 
@@ -1865,12 +1902,10 @@ tools_menu() {
 3. Reality 用户管理
 4. 查看流量统计
 5. 一键体检
-6. 备份配置
-7. 恢复配置
-8. 重载服务
-9. 安装全部依赖
-10. 修复系统环境（软件源/DNS/网络）
-11. 放行防火墙端口
+6. 重载服务
+7. 安装全部依赖
+8. 修复系统环境（软件源/DNS/网络）
+9. 放行防火墙端口
 0. 返回上级
 EOF
     read -r -p '请选择：' choice
@@ -1880,14 +1915,10 @@ EOF
       3) user_menu ;;
       4) traffic ;;
       5) doctor ;;
-      6) guarded backup ;;
-      7) read -r -p '请输入备份文件路径：' src
-         [[ -n $src ]] || { say '已取消。'; continue; }
-         guarded restore "$src" ;;
-      8) guarded reload_services ;;
-      9) guarded cmd_deps ;;
-      10) guarded fixenv ;;
-      11) guarded cmd_open_ports ;;
+      6) guarded reload_services ;;
+      7) guarded cmd_deps ;;
+      8) guarded fixenv ;;
+      9) guarded cmd_open_ports ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1940,8 +1971,9 @@ menu() {
 4. 安装 OpenList（SNI 伪装，可选）
 5. 查看配置、分享链接和服务状态
 6. 更多工具
-7. 卸载管理
-8. 更新脚本
+7. 证书管理
+8. 卸载管理
+9. 更新脚本
 0. 退出
 EOF
     read -r -p '请选择：' choice
@@ -1952,8 +1984,9 @@ EOF
       4) guarded install_openlist_standalone ;;
       5) show_info ;;
       6) tools_menu ;;
-      7) uninstall_menu ;;
-      8) guarded update_script ;;
+      7) cert_menu ;;
+      8) uninstall_menu ;;
+      9) guarded update_script ;;
       0) return ;;
       *) say '无效选项。' ;;
     esac
@@ -1991,8 +2024,8 @@ main() {
   local cmd=${1:-menu}
   case $cmd in
     menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|\
-doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|update-script) ;;
-    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|update-script]'; exit 2 ;;
+doctor|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|update-script|certs|cert-renew|cert-del) ;;
+    *) say '用法：seeword [menu|reality|hy2|ss|openlist|update|info|status|uninstall|uninstall-reality|uninstall-hy2|uninstall-ss|uninstall-openlist|reload|doctor|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|update-script|certs|cert-renew|cert-del]'; exit 2 ;;
   esac
   require_root; detect_env
   # 一键安装类命令先自动拉取最新脚本（静默，失败不阻塞）
@@ -2019,8 +2052,6 @@ doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|up
     uninstall-openlist) uninstall_openlist ;;
     reload) reload_services ;;
     doctor) doctor ;;
-    backup) backup "${2:-}" ;;
-    restore) restore "${2:-}" ;;
     traffic) traffic ;;
     adduser) reality_adduser "${2:-}" ;;
     deluser) reality_deluser "${2:-}" ;;
@@ -2030,6 +2061,9 @@ doctor|backup|restore|traffic|adduser|deluser|users|bbr|deps|fixenv|openports|up
     fixenv) fixenv ;;
     openports) cmd_open_ports ;;
     update-script) update_script ;;
+    certs) cert_list ;;
+    cert-renew) cert_renew "${2:-}" ;;
+    cert-del) cert_delete "${2:-}" ;;
   esac
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

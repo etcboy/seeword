@@ -39,7 +39,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 - 443 端口智能处理：Reality 占用 TCP 443 时，本机 Nginx 的 443 站点自动让位；未通过 Reality 认证的 HTTPS 请求：自有域名模式回落到 Nginx 展示默认页面（已安装 OpenList 则反代到 OpenList）；大厂域名伪装模式直接回落到真实站点，无需本地 Nginx。
 - OpenList 独立安装：不再随 Reality/HY2 自动安装；如需用它做 SNI 伪装站，在主菜单单独安装，可随时独立卸载。
 - 证书按完整域名独立存放，每个域名独立记录验证方式（HTTP/DNS），acme.sh 自动续期。
-- 工具箱：一键体检、流量统计、备份/恢复、BBR、重载服务、内核更新。
+- 工具箱：一键体检、流量统计、BBR、重载服务、内核更新。
 - 更稳：关键操作带并发锁与日志，菜单步骤失败会安全返回，不会直接退出整个脚本。
 
 ### 菜单
@@ -51,9 +51,10 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
 | 4. 安装 OpenList    | SNI 伪装站，可选；有 Web 域名（Reality 自有域名/HY2）时自动复用，Nginx 自动反代到 OpenList；无 Web 域名时（如 Reality 大厂域名模式）可输入自有域名，会自动 DNS 检查、申请证书并建站；都不装则 Nginx 展示默认页面。 |
 | 5. 查看配置与状态   | 分享链接、二维码、OpenList 登录信息、服务状态。                       |
-| 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理子菜单（查看/添加/删除）、流量统计、一键体检、备份/恢复、重载服务、安装全部依赖、修复系统环境、放行防火墙端口。 |
-| 7. 卸载管理         | 二级菜单：彻底全卸载，或单独卸载 Reality / HY2 / SS2022 / OpenList。   |
-| 8. 更新脚本         | 从 GitHub 拉取最新版脚本并替换本地版本。 |
+| 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理子菜单（查看/添加/删除）、流量统计、一键体检、重载服务、安装全部依赖、修复系统环境、放行防火墙端口。 |
+| 7. 证书管理         | 二级菜单：查询证书（到期时间、自动续期状态）、续期证书、删除证书。 |
+| 8. 卸载管理         | 二级菜单：彻底全卸载，或单独卸载 Reality / HY2 / SS2022 / OpenList。   |
+| 9. 更新脚本         | 从 GitHub 拉取最新版脚本并替换本地版本。 |
 
 ### 常用子命令
 
@@ -71,9 +72,10 @@ sudo seeword traffic              # 流量统计（Xray 启动后累计，重启
 sudo seeword adduser [备注]             # Reality 添加用户；直接给备注则一步完成并显示链接和二维码
 sudo seeword deluser [编号或备注]    # Reality 删除用户；直接给编号或备注则一步完成
 sudo seeword users                      # 查看 Reality 用户列表
-sudo seeword backup [输出路径]     # 备份配置
-sudo seeword restore <备份文件>    # 恢复配置
 sudo seeword bbr                  # 一键开启 BBR
+sudo seeword certs                # 查询证书（到期时间、自动续期状态）
+sudo seeword cert-renew [域名]    # 续期证书；直接给域名则一步完成
+sudo seeword cert-del [域名]      # 删除证书；直接给域名则一步完成
 sudo seeword deps                 # 安装全部依赖（curl/jq/openssl/unzip/tar/qrencode/ss/cron/nginx）
 sudo seeword fixenv               # 修复极精简系统环境（软件源/DNS/网络），解决依赖装不上
 sudo seeword openports            # 手动放行防火墙端口（支持单个/多个/连续）
