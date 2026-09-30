@@ -691,7 +691,7 @@ EOF
   restart_or_start nginx || err 'Nginx 无法启动 HTTP 验证站点。'
 }
 issue_cert() {
-  local domain=$1 dir owner token zone method_file old_dir
+  local domain=$1 dir owner token zone method_file old_dir legacy_dir
   dir=$(cert_dir "$domain")
   owner=$dir/domain.txt
   method_file=$dir/method
@@ -700,6 +700,13 @@ issue_cert() {
   if [[ $old_dir != "$dir" && ! -d $dir && -d $old_dir && -f $old_dir/domain.txt && $(cat "$old_dir/domain.txt") == "$domain" ]]; then
     mv "$old_dir" "$dir"
     say "已迁移旧证书目录 $old_dir → $dir"
+  fi
+  # 迁移旧版 CERT_ROOT（/etc/nginx/zs）下的证书目录
+  legacy_dir="/etc/nginx/zs/$domain"
+  if [[ ! -d $dir && -d $legacy_dir && -f $legacy_dir/domain.txt && $(cat "$legacy_dir/domain.txt") == "$domain" ]]; then
+    install -d -m 700 "$CERT_ROOT"
+    mv "$legacy_dir" "$dir"
+    say "已迁移旧证书目录 $legacy_dir → $dir"
   fi
   if [[ -f $owner && $(cat "$owner") != "$domain" ]]; then
     err "证书目录 $dir 已属于 $(cat "$owner")，域名冲突。"
@@ -902,7 +909,7 @@ install_openlist_standalone() {
   fi
   if [[ -z $domain ]]; then
     say '未检测到 Web 域名（如 Reality 使用大厂域名伪装）。'
-    say 'OpenList 需要自有域名做 SNI 伪装站，请输入域名。'
+    say 'OpenList 需要自有域名以启用 HTTPS 访问，请输入域名。'
     read -r -p 'OpenList 访问域名：' domain
     [[ -n $domain ]] || err '未输入域名，已取消安装。'
     domain=${domain,,}
@@ -1610,14 +1617,14 @@ cert_list() {
 cert_select() {
   local -a doms
   mapfile -t doms < <(cert_dirs)
-  [[ ${#doms[@]} -gt 0 ]] || { say '暂无本脚本管理的证书。'; return 1; }
+  [[ ${#doms[@]} -gt 0 ]] || { say '暂无本脚本管理的证书。' >&2; return 1; }
   local i dom choice
-  say '请选择证书：'
+  say '请选择证书：' >&2
   for i in "${!doms[@]}"; do
-    say "  $((i+1)). ${doms[$i]}"
+    say "  $((i+1)). ${doms[$i]}" >&2
   done
-  read -r -p '请输入编号：' choice
-  [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#doms[@]} )) || { say '编号无效。'; return 1; }
+  read -r -p '请输入编号：' choice >&2
+  [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#doms[@]} )) || { say '编号无效。' >&2; return 1; }
   dom=${doms[$((choice-1))]}
   printf '%s\n' "$dom"
 }
@@ -1625,22 +1632,21 @@ cert_select() {
 # 续期证书：手动触发 acme.sh 续期并重新安装到证书目录
 cert_renew() {
   require_root
-  local dom dir
+  local dom dir acme_dir
   dom=${1:-}
   [[ -n $dom ]] || dom=$(cert_select) || return
   dir=$(cert_dir "$dom")
   [[ -f $dir/domain.txt ]] || err "证书 $dom 不存在。"
   [[ -x $ACME ]] || err 'acme.sh 未安装。'
+  # 检查 acme.sh 是否接管该域名（手动拷入的证书无法续期）
+  acme_dir="${ACME%/*}/${dom}_ecc"
+  [[ -d $acme_dir ]] || err "证书 $dom 未由 acme.sh 管理，无法自动续期（如为手动导入，请删除后重新申请）。"
+  say '注意：频繁手动续期可能触发 Let'"'"'s Encrypt 每周 5 张重复证书的限制。'
   say "正在为 $dom 申请续期…"
   if ! "$ACME" --renew -d "$dom" --ecc --force; then
     err "证书 $dom 续期失败，请检查网络/DNS/验证方式。"
   fi
-  "$ACME" --install-cert -d "$dom" --ecc \
-    --key-file "$dir/privkey.pem" \
-    --fullchain-file "$dir/fullchain.pem" \
-    --reloadcmd "$SELF reload" || err '证书安装失败。'
-  chmod 600 "$dir/privkey.pem"
-  chmod 644 "$dir/fullchain.pem"
+  # acme.sh --renew 成功后会自动执行存档的 --install-cert（含 reloadcmd），无需手动再跑一遍
   say "证书 $dom 续期成功。"
 }
 
