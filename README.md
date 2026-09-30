@@ -49,7 +49,7 @@ wget -qO- https://raw.githubusercontent.com/etcboy/seeword/main/install.sh | sud
  | 1. 一键安装 Reality | 选择 SNI 伪装方式：①大厂域名（推荐）②自有域名。 |
 | 2. 一键安装 HY2     | 输入域名与 UDP 端口（默认 443）。                                     |
 | 3. 一键安装 SS2022  | 自选端口，自动生成 16 字节随机密钥，使用 `2022-blake3-aes-128-gcm`。   |
-| 4. 安装 OpenList    | SNI 伪装站，可选；有 Web 域名（Reality 自有域名/HY2）时自动复用，Nginx 自动反代到 OpenList；无 Web 域名时（如 Reality 大厂域名模式）可输入自有域名，会自动 DNS 检查、申请证书并建站；都不装则 Nginx 展示默认页面。 |
+| 4. 安装 OpenList    | SNI 伪装站，可选；有 Web 域名（Reality 自有域名/HY2）时自动复用，Nginx 自动反代到 OpenList；无 Web 域名时（如 Reality 大厂域名模式）需输入自有域名，会自动 DNS 检查、申请证书并建站。 |
 | 5. 查看配置与状态   | 分享链接、二维码、OpenList 登录信息、服务状态。                       |
 | 6. 更多工具         | 更新内核与地理数据、BBR、Reality 用户管理子菜单（查看/添加/删除）、流量统计、一键体检、重载服务、安装全部依赖、修复系统环境、放行防火墙端口。 |
 | 7. 证书管理         | 二级菜单：查询证书（到期时间、自动续期状态）、续期证书、删除证书。 |

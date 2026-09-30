@@ -896,21 +896,19 @@ install_openlist_standalone() {
   require_root; detect_env
   ensure_deps
   state_init; init_tmp
-  local domain= has_web=0 own_domain=0
+  local domain= own_domain=0
   if [[ -f $STATE ]]; then
     domain=$(web_domain 2>/dev/null || true)
-    { has_reality || has_hy2; } && has_web=1
   fi
   if [[ -z $domain ]]; then
     say '未检测到 Web 域名（如 Reality 使用大厂域名伪装）。'
-    say '如有自有域名并想通过 HTTPS 访问 OpenList，请输入；没有则直接回车，装完后通过 http://服务器IP:5244 访问。'
-    read -r -p 'OpenList 访问域名（可留空）：' domain
-    if [[ -n $domain ]]; then
-      domain=${domain,,}
-      valid_domain "$domain" || err '域名格式不正确。'
-      check_domain_dns "$domain" || return 1
-      own_domain=1
-    fi
+    say 'OpenList 需要自有域名做 SNI 伪装站，请输入域名。'
+    read -r -p 'OpenList 访问域名：' domain
+    [[ -n $domain ]] || err '未输入域名，已取消安装。'
+    domain=${domain,,}
+    valid_domain "$domain" || err '域名格式不正确。'
+    check_domain_dns "$domain" || return 1
+    own_domain=1
   else
     say "OpenList 将绑定到现有 Web 域名：$domain"
   fi
@@ -924,21 +922,14 @@ install_openlist_standalone() {
   fi
   install_openlist "$domain"
   # 有 Web 协议或 OpenList 自有域名时，重写 Nginx
-  if (( has_web )) || (( own_domain )); then
-    WRITE_NGINX_O443_SKIPPED=0
-    write_nginx "$STATE" || err 'Nginx 配置更新失败。'
-    sync_openlist_siteurl
-    if (( WRITE_NGINX_O443_SKIPPED )); then
-      say '警告：Reality 已占用 TCP 443，OpenList 独立域名无法在 443 建站。' >&2
-      say 'OpenList 仍可通过 http://服务器IP:5244 直接访问，或将 Reality 移出 443 后重装 OpenList。' >&2
-    else
-      say 'Nginx 已切换为反代 OpenList。'
-    fi
+  WRITE_NGINX_O443_SKIPPED=0
+  write_nginx "$STATE" || err 'Nginx 配置更新失败。'
+  sync_openlist_siteurl
+  if (( WRITE_NGINX_O443_SKIPPED )); then
+    say '警告：Reality 已占用 TCP 443，OpenList 独立域名无法在 443 建站。' >&2
+    say '请将 Reality 移出 443 后重装 OpenList。' >&2
   else
-    # 无域名时只能通过 IP:5244 直接访问，需放行防火墙
-    open_firewall_port tcp 5244 || say '警告：TCP 5244 端口放行失败，请手动检查防火墙（OpenList 直接访问需要）。'
-    say '当前未安装 Reality/HY2，安装 Web 协议后 Nginx 会自动反代 OpenList。'
-    say '当前可通过 http://服务器IP:5244 直接访问 OpenList。'
+    say 'Nginx 已切换为反代 OpenList。'
   fi
 }
 # 单独卸载 OpenList，站点切回 Nginx 默认页面
