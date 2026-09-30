@@ -1116,8 +1116,9 @@ install_common() {
 install_reality() {
   install_common
   has_reality && err 'Reality 已安装。'
-  ensure_web_deps
   ask_reality_sni || return 1
+  # 仅自有域名模式需要 Nginx（证书 HTTP 验证与回落站点）；大厂伪装模式回落直连真实站点，不需要
+  [[ $BORROWED_SNI == 0 ]] && ensure_web_deps
   ask_reality_port
   local fallback_port
   if [[ $BORROWED_SNI == 1 ]]; then
@@ -1385,7 +1386,9 @@ doctor() {
   if [[ -x $OPENLIST_DIR/openlist ]]; then
     if svc_active openlist; then t_ok 'OpenList 服务运行中'; else t_fail 'OpenList 服务未运行'; fi
   fi
-  if has_reality || has_hy2; then
+  # 只有 Nginx 实际在提供 Web 服务（存在 Web 域名）时才检查它；
+  # 大厂域名伪装等模式不需要 Nginx，不检查以免误报
+  if [[ -n $(web_domain) ]]; then
     if command -v nginx >/dev/null 2>&1 && nginx -t >/dev/null 2>&1; then
       t_ok 'Nginx 配置验证通过'
     else t_fail 'Nginx 配置验证失败'; fi
@@ -1443,7 +1446,10 @@ traffic() {
     dir=${name##*>>>}
     [[ $dir == uplink || $dir == downlink ]] || continue
     email=${name#*>>>}; email=${email%%>>>*}
-    if [[ $dir == uplink ]]; then TUPS[$email]=${value:-0}; else TDOWNS[$email]=${value:-0}; fi
+    # Xray API 无流量时 value 可能为 null（jq 渲染成字符串 "null"），先洗成数字，
+    # 否则 human_bytes 在 set -u 下报 unbound variable
+    [[ $value =~ ^[0-9]+$ ]] || value=0
+    if [[ $dir == uplink ]]; then TUPS[$email]=$value; else TDOWNS[$email]=$value; fi
   done < <(jq -r '.stat[]? | "\(.name)\t\(.value)"' <<< "$out")
   say '流量统计（自 Xray 启动累计，重启后清零）：'
   if has_reality; then
